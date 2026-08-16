@@ -33,6 +33,8 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,6 +42,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.aapdasetu.ui.auth.AuthNavContainer
+import com.example.aapdasetu.ui.auth.AuthViewModel
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1098,6 +1103,23 @@ class MainActivity : ComponentActivity() {
 
         setContent {
 
+            val authViewModel: AuthViewModel = viewModel()
+            val authUiState by authViewModel.uiState.collectAsState()
+
+            if (!authUiState.isLoggedIn) {
+                AuthNavContainer(
+                    viewModel = authViewModel,
+                    onAuthenticated = {
+                        authUiState.currentUser?.username?.let { username ->
+                            if (username.isNotBlank()) {
+                                nodeIdState.value = username
+                                saveNodeName(username)
+                            }
+                        }
+                    }
+                )
+            } else {
+
             // =================================================
             // STATE
             // =================================================
@@ -1305,20 +1327,27 @@ class MainActivity : ComponentActivity() {
                     // =========================================
 
                     item {
-
-                        Text(
-                            text =
-                                "AapdaSetu",
-                            style =
-                                MaterialTheme
-                                    .typography
-                                    .headlineMedium
-                        )
-
-                        Text(
-                            text =
-                                "Offline Bluetooth Emergency Network"
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text(
+                                    text = "AapdaSetu",
+                                    style = MaterialTheme.typography.headlineMedium
+                                )
+                                Text(
+                                    text = "Operator: ${authUiState.currentUser?.username ?: "Online"}",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { authViewModel.logout() }
+                            ) {
+                                Text("Logout")
+                            }
+                        }
                     }
 
                     // =========================================
@@ -2266,6 +2295,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+            } // Close if (authUiState.isLoggedIn)
         }
     }
 

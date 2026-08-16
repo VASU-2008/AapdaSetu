@@ -1,0 +1,27 @@
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 24px 6px 24px;
+  width: 100%;
+  color: #1e2029;
+  font-weight: 600;
+  font-size: 14px;
+  letter-spacing: -0.2px;
+  z-index: 10;
+}
+
+.status-time {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.status-icons {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.status-icon {
+  opacity: 0.9;
+}
