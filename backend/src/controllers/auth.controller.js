@@ -1,14 +1,13 @@
 import userModel from "../models/user.model.js";
-import blacklistTokenModel from "../models/blacklistToken.model.js";
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
-export const registerUser = async (req, res) => {
+const registerUser = async (req, res) => {
     try {
         const { username, email, password } = req.body;
         if (!username || !email || !password) {
             return res.status(400).json({
-                message: "Please provide all required fields (username, email, password)."
+                message: "Please provide credentials (username, email, password)"
             });
         }
 
@@ -18,7 +17,7 @@ export const registerUser = async (req, res) => {
 
         if (isAlreadyExists) {
             return res.status(400).json({
-                message: "User with this username or email already exists."
+                message: "User Already Exists"
             });
         }
 
@@ -30,17 +29,15 @@ export const registerUser = async (req, res) => {
             password: hashedPassword
         });
 
-        const secret = process.env.JWT_SECRET || "aapda_setu_jwt_secret_key_2026";
-
         const token = jwt.sign(
             { id: user._id },
-            secret,
+            process.env.JWT_SECRET || "19371bb30e273afee29178d3712905e5cb619354e50168a9dc8cde125828f385",
             { expiresIn: "1d" }
         );
 
         res.cookie("token", token, {
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000 // 1 day
+            maxAge: 24 * 60 * 60 * 1000
         });
 
         return res.status(201).json({
@@ -61,14 +58,9 @@ export const registerUser = async (req, res) => {
     }
 };
 
-export const loginUser = async (req, res) => {
+const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
-        if (!email || !password) {
-            return res.status(400).json({
-                message: "Please provide email and password."
-            });
-        }
 
         const user = await userModel.findOne({ email });
 
@@ -86,17 +78,15 @@ export const loginUser = async (req, res) => {
             });
         }
 
-        const secret = process.env.JWT_SECRET || "aapda_setu_jwt_secret_key_2026";
-
         const token = jwt.sign(
             { id: user._id },
-            secret,
+            process.env.JWT_SECRET || "19371bb30e273afee29178d3712905e5cb619354e50168a9dc8cde125828f385",
             { expiresIn: "1d" }
         );
 
         res.cookie("token", token, {
             httpOnly: true,
-            maxAge: 24 * 60 * 60 * 1000 // 1 day
+            maxAge: 24 * 60 * 60 * 1000
         });
 
         return res.status(200).json({
@@ -117,14 +107,10 @@ export const loginUser = async (req, res) => {
     }
 };
 
-export const logoutUserController = async (req, res) => {
+const logoutUserController = async (req, res) => {
     try {
-        const token = req.cookies?.token || req.headers.authorization?.split(" ")[1];
-        if (token) {
-            await blacklistTokenModel.create({ token });
-        }
-
         res.clearCookie("token");
+        res.clearCookie("JWT_TOKEN");
         return res.status(200).json({
             message: "User logged out Successfully"
         });
@@ -137,4 +123,5 @@ export const logoutUserController = async (req, res) => {
     }
 };
 
+export { registerUser, loginUser, logoutUserController };
 export default { registerUser, loginUser, logoutUserController };

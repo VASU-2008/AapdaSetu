@@ -1,3 +1,4 @@
+
 import { Request, Response } from 'express';
 
 export interface DisasterAlert {
@@ -31,57 +32,39 @@ const mockAlerts: DisasterAlert[] = [
   },
 ];
 
-export const getAlerts = (req: Request, res: Response): Response => {
-  try {
-    return res.status(200).json({
-      success: true,
-      count: mockAlerts.length,
-      data: mockAlerts,
-    });
-  } catch (error: any) {
-    return res.status(500).json({
-      success: false,
-      message: 'Server Error',
-      error: error?.message || 'Unknown error',
-    });
-  }
+export const getAlerts = (req: Request, res: Response) => {
+  res.status(200).json({
+    success: true,
+    count: mockAlerts.length,
+    data: mockAlerts,
+  });
 };
 
-export const createAlert = (req: Request, res: Response): Response => {
-  try {
-    const { title, type, severity, location, description } = req.body;
+export const createAlert = (req: Request, res: Response) => {
+  const { title, type, severity, location, description } = req.body;
 
-    if (!title || !type || !severity || !location) {
-      return res.status(400).json({
-        success: false,
-        message: 'Missing required alert fields (title, type, severity, location).',
-      });
-    }
-
-    const newAlert: DisasterAlert = {
-      id: `ALT-${Date.now().toString().slice(-4)}`,
-      title,
-      type,
-      severity,
-      location,
-      description: description || '',
-      timestamp: new Date().toISOString(),
-    };
-
-    mockAlerts.unshift(newAlert);
-
-    return res.status(201).json({
-      success: true,
-      message: 'Alert created successfully',
-      data: newAlert,
-    });
-  } catch (error: any) {
-    return res.status(500).json({
+  if (!title || !type || !severity || !location) {
+    return res.status(400).json({
       success: false,
-      message: 'Server Error',
-      error: error?.message || 'Unknown error',
+      message: 'Missing required alert fields (title, type, severity, location).',
     });
   }
-};
 
-export default { getAlerts, createAlert };
+  const newAlert: DisasterAlert = {
+    id: `ALT-${Date.now().toString().slice(-4)}`,
+    title,
+    type,
+    severity,
+    location,
+    description: description || '',
+    timestamp: new Date().toISOString(),
+  };
+
+  mockAlerts.unshift(newAlert);
+
+  return res.status(201).json({
+    success: true,
+    message: 'Alert created successfully',
+    data: newAlert,
+  });
+};

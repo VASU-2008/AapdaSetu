@@ -16,11 +16,11 @@ app.use("/api/v1", alertRoutes);
 
 // Health Check Endpoint
 app.get("/health", (req, res) => {
-  res.status(200).json({
-    status: "UP",
-    message: "AapdaSetu Backend API is running",
-    timestamp: new Date().toISOString()
-  });
+    res.status(200).json({
+        status: "UP",
+        message: "AapdaSetu Backend API is running",
+        timestamp: new Date().toISOString()
+    });
 });
 
 export default app;
