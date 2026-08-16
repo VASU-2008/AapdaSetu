@@ -34,6 +34,10 @@ class BleManager(
 
     companion object {
 
+        // =====================================================
+        // AAPDASETU UUIDS
+        // =====================================================
+
         private val SERVICE_UUID =
             UUID.fromString(
                 "12345678-1234-1234-1234-1234567890AB"
@@ -49,20 +53,36 @@ class BleManager(
                 "12345678-1234-1234-1234-1234567890AD"
             )
 
+        // =====================================================
+        // FRAME
+        // =====================================================
+
         private const val FRAME_START = "<ASSTART>"
         private const val FRAME_END = "<ASEND>"
 
         private val FRAME_START_BYTES =
-            FRAME_START.toByteArray(StandardCharsets.UTF_8)
+            FRAME_START.toByteArray(
+                StandardCharsets.UTF_8
+            )
 
         private val FRAME_END_BYTES =
-            FRAME_END.toByteArray(StandardCharsets.UTF_8)
+            FRAME_END.toByteArray(
+                StandardCharsets.UTF_8
+            )
+
+        // =====================================================
+        // BLE
+        // =====================================================
 
         private const val DEFAULT_MTU = 23
         private const val REQUESTED_MTU = 247
 
-        private const val MAX_CHUNK_SIZE = 244
         private const val MIN_CHUNK_SIZE = 20
+        private const val MAX_CHUNK_SIZE = 244
+
+        // =====================================================
+        // MESH
+        // =====================================================
 
         private const val MAX_TTL = 5
         private const val MAX_MESSAGES = 500
@@ -73,12 +93,27 @@ class BleManager(
         private const val MAX_VOICE_PAYLOAD =
             700 * 1024
 
+        // =====================================================
+        // LIVE LOCATION
+        // =====================================================
+
+        private const val LOCATION_PREFIX =
+            "__AS_LOCATION__"
+
+        // =====================================================
+        // RETRY
+        // =====================================================
+
         private const val RECONNECT_DELAY = 3000L
         private const val RETRY_LOOP = 5000L
         private const val CHUNK_RETRY_DELAY = 350L
         private const val MAX_CHUNK_RETRIES = 5
         private const val CONNECTION_TIMEOUT = 15000L
     }
+
+    // =====================================================
+    // BLUETOOTH
+    // =====================================================
 
     private val bluetoothManager =
         context.getSystemService(
@@ -94,10 +129,22 @@ class BleManager(
     private val scanner: BluetoothLeScanner?
         get() = bluetoothAdapter?.bluetoothLeScanner
 
-    private var nodeId: String = ""
+    // =====================================================
+    // NODE
+    // =====================================================
+
+    private var nodeId = ""
+
+    // =====================================================
+    // SERVER
+    // =====================================================
 
     private var gattServer:
             BluetoothGattServer? = null
+
+    // =====================================================
+    // CALLBACKS
+    // =====================================================
 
     var onStatusChanged:
             ((String) -> Unit)? = null
@@ -111,9 +158,40 @@ class BleManager(
     var onMessageHistoryChanged:
             ((List<HopMessage>) -> Unit)? = null
 
-    // =========================================================
+    var onLocationReceived:
+            ((NodeLocation) -> Unit)? = null
+
+    var onNodeSignalChanged:
+            ((String, Int) -> Unit)? = null
+
+    // =====================================================
+    // NODE LOCATION
+    // =====================================================
+
+    data class NodeLocation(
+
+        val nodeId: String,
+
+        val latitude: Double,
+
+        val longitude: Double,
+
+        val accuracyMeters: Float,
+
+        /*
+         * Original GPS timestamp from the sending phone.
+         */
+        val timestamp: Long,
+
+        /*
+         * Number of mesh hops.
+         */
+        val hopCount: Int
+    )
+
+    // =====================================================
     // MESSAGE
-    // =========================================================
+    // =====================================================
 
     data class HopMessage(
 
@@ -135,31 +213,16 @@ class BleManager(
 
         val isVoice: Boolean = false,
 
-        /*
-         * Time when the original message was created.
-         */
-        val timestamp: Long = System.currentTimeMillis(),
+        val timestamp: Long =
+            System.currentTimeMillis(),
 
-        /*
-         * Voice recording duration.
-         *
-         * Zero for text messages.
-         */
         val recordingDurationMs: Long = 0L
     ) {
-
-        // =====================================================
-        // ENCODE
-        // =====================================================
 
         fun encode(): String {
 
             return buildString {
 
-                /*
-                 * AS4 = new protocol containing timestamp
-                 * and recording duration.
-                 */
                 append("AS4")
                 append("|")
 
@@ -179,6 +242,7 @@ class BleManager(
                     if (hasLocation) "1"
                     else "0"
                 )
+
                 append("|")
 
                 append(latitude)
@@ -191,6 +255,7 @@ class BleManager(
                     if (isVoice) "1"
                     else "0"
                 )
+
                 append("|")
 
                 append(timestamp)
@@ -199,21 +264,11 @@ class BleManager(
                 append(recordingDurationMs)
                 append("|")
 
-                /*
-                 * Final field is the actual message.
-                 *
-                 * limit=12 is used during decoding so any |
-                 * inside the message remains in the final field.
-                 */
                 append(message)
             }
         }
 
         companion object {
-
-            // =================================================
-            // DECODE
-            // =================================================
 
             fun decode(
                 data: String
@@ -231,10 +286,12 @@ class BleManager(
                         )
 
                     // =================================================
-                    // NEW AS4 FORMAT
+                    // AS4
                     // =================================================
 
-                    if (clean.startsWith("AS4|")) {
+                    if (
+                        clean.startsWith("AS4|")
+                    ) {
 
                         val parts =
                             clean.split(
@@ -242,7 +299,9 @@ class BleManager(
                                 limit = 12
                             )
 
-                        if (parts.size != 12) {
+                        if (
+                            parts.size != 12
+                        ) {
                             return null
                         }
 
@@ -264,7 +323,7 @@ class BleManager(
                                 .toIntOrNull()
                                 ?: return null
 
-                        val location =
+                        val hasLocation =
                             parts[5].trim() == "1"
 
                         val latitude =
@@ -279,7 +338,7 @@ class BleManager(
                                 .toDoubleOrNull()
                                 ?: 0.0
 
-                        val voice =
+                        val isVoice =
                             parts[8].trim() == "1"
 
                         val timestamp =
@@ -288,7 +347,7 @@ class BleManager(
                                 .toLongOrNull()
                                 ?: System.currentTimeMillis()
 
-                        val recordingDuration =
+                        val duration =
                             parts[10]
                                 .trim()
                                 .toLongOrNull()
@@ -298,27 +357,21 @@ class BleManager(
                             parts[11]
 
                         if (
-                            messageId.isBlank()
-                        ) {
-                            return null
-                        }
-
-                        if (
+                            messageId.isBlank() ||
                             senderId.isBlank()
                         ) {
                             return null
                         }
 
-                        if (hop < 0) {
-                            return null
-                        }
-
-                        if (ttl < 0) {
+                        if (
+                            hop < 0 ||
+                            ttl < 0
+                        ) {
                             return null
                         }
 
                         if (
-                            voice &&
+                            isVoice &&
                             message.length >
                             MAX_VOICE_PAYLOAD
                         ) {
@@ -343,7 +396,7 @@ class BleManager(
                                 ttl,
 
                             hasLocation =
-                                location,
+                                hasLocation,
 
                             latitude =
                                 latitude,
@@ -352,21 +405,23 @@ class BleManager(
                                 longitude,
 
                             isVoice =
-                                voice,
+                                isVoice,
 
                             timestamp =
                                 timestamp,
 
                             recordingDurationMs =
-                                recordingDuration
+                                duration
                         )
                     }
 
                     // =================================================
-                    // OLD AS3 FORMAT
+                    // OLD AS3 COMPATIBILITY
                     // =================================================
 
-                    if (clean.startsWith("AS3|")) {
+                    if (
+                        clean.startsWith("AS3|")
+                    ) {
 
                         val parts =
                             clean.split(
@@ -374,7 +429,9 @@ class BleManager(
                                 limit = 10
                             )
 
-                        if (parts.size != 10) {
+                        if (
+                            parts.size != 10
+                        ) {
                             return null
                         }
 
@@ -396,7 +453,7 @@ class BleManager(
                                 .toIntOrNull()
                                 ?: return null
 
-                        val location =
+                        val hasLocation =
                             parts[5].trim() == "1"
 
                         val latitude =
@@ -411,7 +468,7 @@ class BleManager(
                                 .toDoubleOrNull()
                                 ?: 0.0
 
-                        val voice =
+                        val isVoice =
                             parts[8].trim() == "1"
 
                         val message =
@@ -435,7 +492,7 @@ class BleManager(
                                 ttl,
 
                             hasLocation =
-                                location,
+                                hasLocation,
 
                             latitude =
                                 latitude,
@@ -444,11 +501,8 @@ class BleManager(
                                 longitude,
 
                             isVoice =
-                                voice,
+                                isVoice,
 
-                            /*
-                             * Old messages didn't carry timestamp.
-                             */
                             timestamp =
                                 System.currentTimeMillis(),
 
@@ -459,7 +513,9 @@ class BleManager(
 
                     null
 
-                } catch (_: Exception) {
+                } catch (
+                    _: Exception
+                ) {
 
                     null
                 }
@@ -467,9 +523,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // PEER
-    // =========================================================
+    // =====================================================
 
     private class Peer(
         val device: BluetoothDevice
@@ -482,7 +538,8 @@ class BleManager(
                 String? = null
 
         var messageCharacteristic:
-                BluetoothGattCharacteristic? = null
+                BluetoothGattCharacteristic? =
+            null
 
         var ready = false
 
@@ -490,6 +547,9 @@ class BleManager(
 
         var mtu =
             DEFAULT_MTU
+
+        var rssi:
+                Int? = null
 
         var receiveBuffer =
             ByteArray(0)
@@ -516,8 +576,16 @@ class BleManager(
             false
     }
 
+    // =====================================================
+    // PEERS
+    // =====================================================
+
     private val peers =
         LinkedHashMap<String, Peer>()
+
+    // =====================================================
+    // MESSAGE STORAGE
+    // =====================================================
 
     private val storedMessages =
         LinkedHashMap<String, HopMessage>(
@@ -529,8 +597,14 @@ class BleManager(
     private val bestHop =
         HashMap<String, Int>()
 
+    // =====================================================
+    // HANDLER
+    // =====================================================
+
     private val handler =
-        Handler(Looper.getMainLooper())
+        Handler(
+            Looper.getMainLooper()
+        )
 
     private var retryRunnable:
             Runnable? = null
@@ -538,9 +612,9 @@ class BleManager(
     private var scanCallback:
             ScanCallback? = null
 
-    // =========================================================
+    // =====================================================
     // START
-    // =========================================================
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     fun start(
@@ -550,7 +624,9 @@ class BleManager(
         nodeId =
             myNodeId.trim()
 
-        if (nodeId.isBlank()) {
+        if (
+            nodeId.isBlank()
+        ) {
 
             onStatusChanged?.invoke(
                 "INVALID NODE ID"
@@ -560,10 +636,6 @@ class BleManager(
         }
 
         stopInternal()
-
-        onStatusChanged?.invoke(
-            "STARTING AAPDASETU MESH..."
-        )
 
         if (
             bluetoothAdapter == null
@@ -587,12 +659,13 @@ class BleManager(
             return
         }
 
+        onStatusChanged?.invoke(
+            "STARTING AAPDASETU MESH..."
+        )
+
         startGattServer()
-
         startAdvertising()
-
         startScanning()
-
         startRetryLoop()
 
         notifyHistory()
@@ -602,9 +675,9 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // HISTORY
-    // =========================================================
+    // =====================================================
 
     fun getStoredMessages():
             List<HopMessage> {
@@ -613,9 +686,15 @@ class BleManager(
             storedMessages
         ) {
 
-            return storedMessages.values.toList()
+            return storedMessages
+                .values
+                .toList()
         }
     }
+
+    // =====================================================
+    // CONNECTED COUNT
+    // =====================================================
 
     fun getConnectedNodeCount():
             Int {
@@ -628,9 +707,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // DELETE
-    // =========================================================
+    // =====================================================
 
     fun deleteMessage(
         messageId: String
@@ -651,7 +730,9 @@ class BleManager(
 
         synchronized(peers) {
 
-            for (peer in peers.values) {
+            for (
+            peer in peers.values
+            ) {
 
                 peer.queue.removeAll {
                     it.messageId ==
@@ -699,7 +780,9 @@ class BleManager(
 
         synchronized(peers) {
 
-            for (peer in peers.values) {
+            for (
+            peer in peers.values
+            ) {
 
                 peer.queue.clear()
 
@@ -722,9 +805,165 @@ class BleManager(
         notifyHistory()
     }
 
-    // =========================================================
+    // =====================================================
+    // LIVE LOCATION SEND
+    // =====================================================
+
+    fun sendLocationUpdate(
+
+        latitude: Double,
+
+        longitude: Double,
+
+        accuracyMeters: Float
+
+    ) {
+
+        if (
+            !latitude.isFinite() ||
+            !longitude.isFinite()
+        ) {
+            return
+        }
+
+        if (
+            latitude !in -90.0..90.0 ||
+            longitude !in -180.0..180.0
+        ) {
+            return
+        }
+
+        if (
+            !accuracyMeters.isFinite() ||
+            accuracyMeters < 0f
+        ) {
+            return
+        }
+
+        val timestamp =
+            System.currentTimeMillis()
+
+        /*
+         * New packet:
+         *
+         * __AS_LOCATION__|
+         * NODE|
+         * LAT|
+         * LON|
+         * ACCURACY|
+         * TIMESTAMP
+         */
+        val payload =
+            buildString {
+
+                append(
+                    LOCATION_PREFIX
+                )
+
+                append("|")
+                append(nodeId)
+                append("|")
+                append(latitude)
+                append("|")
+                append(longitude)
+                append("|")
+                append(accuracyMeters)
+                append("|")
+                append(timestamp)
+            }
+
+        val locationMessage =
+            HopMessage(
+
+                messageId =
+                    "LOC-$nodeId-$timestamp",
+
+                senderId =
+                    nodeId,
+
+                message =
+                    payload,
+
+                hopCount =
+                    0,
+
+                ttl =
+                    MAX_TTL,
+
+                hasLocation =
+                    true,
+
+                latitude =
+                    latitude,
+
+                longitude =
+                    longitude,
+
+                isVoice =
+                    false,
+
+                timestamp =
+                    timestamp,
+
+                recordingDurationMs =
+                    0L
+            )
+
+        synchronized(peers) {
+
+            for (
+            peer in peers.values
+            ) {
+
+                if (!peer.ready) {
+                    continue
+                }
+
+                if (peer.gatt == null) {
+                    continue
+                }
+
+                if (
+                    peer.messageCharacteristic ==
+                    null
+                ) {
+                    continue
+                }
+
+                val remoteNode =
+                    peer.nodeId
+                        ?: continue
+
+                if (
+                    remoteNode ==
+                    nodeId
+                ) {
+                    continue
+                }
+
+                if (
+                    peerHasMessage(
+                        peer,
+                        locationMessage.messageId
+                    )
+                ) {
+                    continue
+                }
+
+                peer.queue.addLast(
+                    locationMessage
+                )
+
+                processPeerQueue(
+                    peer
+                )
+            }
+        }
+    }
+
+    // =====================================================
     // GATT SERVER
-    // =========================================================
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun startGattServer() {
@@ -803,12 +1042,14 @@ class BleManager(
             messageCharacteristic
         )
 
-        val added =
+        val result =
             gattServer?.addService(
                 service
             )
 
-        if (added == true) {
+        if (
+            result == true
+        ) {
 
             onStatusChanged?.invoke(
                 "GATT SERVER READY"
@@ -822,9 +1063,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // SERVER CALLBACK
-    // =========================================================
+    // =====================================================
 
     private val serverCallback =
         object :
@@ -1006,7 +1247,9 @@ class BleManager(
                     MESSAGE_UUID
                 ) {
 
-                    if (responseNeeded) {
+                    if (
+                        responseNeeded
+                    ) {
 
                         gattServer?.sendResponse(
 
@@ -1032,7 +1275,6 @@ class BleManager(
                         peers.getOrPut(
                             device.address
                         ) {
-
                             Peer(device)
                         }
                     }
@@ -1067,7 +1309,9 @@ class BleManager(
                     }
                 }
 
-                if (responseNeeded) {
+                if (
+                    responseNeeded
+                ) {
 
                     gattServer?.sendResponse(
 
@@ -1086,16 +1330,22 @@ class BleManager(
             }
         }
 
-    // =========================================================
-    // BYTE HELPERS
-    // =========================================================
+    // =====================================================
+    // BYTE APPEND
+    // =====================================================
 
     private fun appendBytes(
+
         old: ByteArray,
+
         new: ByteArray
+
     ): ByteArray {
 
-        if (old.isEmpty()) {
+        if (
+            old.isEmpty()
+        ) {
+
             return new.copyOf()
         }
 
@@ -1124,6 +1374,10 @@ class BleManager(
         return result
     }
 
+    // =====================================================
+    // FIND BYTES
+    // =====================================================
+
     private fun indexOfBytes(
 
         data: ByteArray,
@@ -1138,7 +1392,6 @@ class BleManager(
             target.isEmpty() ||
             data.size < target.size
         ) {
-
             return -1
         }
 
@@ -1153,7 +1406,6 @@ class BleManager(
             data.size -
             target.size
         ) {
-
             return -1
         }
 
@@ -1190,9 +1442,9 @@ class BleManager(
         return -1
     }
 
-    // =========================================================
+    // =====================================================
     // RECEIVE BUFFER
-    // =========================================================
+    // =====================================================
 
     private fun processReceiveBuffer(
         peer: Peer
@@ -1209,15 +1461,15 @@ class BleManager(
                     FRAME_START_BYTES
                 )
 
-            if (start < 0) {
+            if (
+                start < 0
+            ) {
 
                 val keep =
-                    FRAME_START_BYTES.size -
-                            1
+                    FRAME_START_BYTES.size - 1
 
                 if (
-                    buffer.size >
-                    keep
+                    buffer.size > keep
                 ) {
 
                     peer.receiveBuffer =
@@ -1231,7 +1483,9 @@ class BleManager(
                 return
             }
 
-            if (start > 0) {
+            if (
+                start > 0
+            ) {
 
                 peer.receiveBuffer =
                     buffer.copyOfRange(
@@ -1250,7 +1504,9 @@ class BleManager(
                     FRAME_START_BYTES.size
                 )
 
-            if (end < 0) {
+            if (
+                end < 0
+            ) {
                 return
             }
 
@@ -1278,7 +1534,9 @@ class BleManager(
                     payload
                 )
 
-            if (message == null) {
+            if (
+                message == null
+            ) {
 
                 onStatusChanged?.invoke(
                     "MESSAGE DECODE FAILED"
@@ -1294,9 +1552,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
-    // INCOMING
-    // =========================================================
+    // =====================================================
+    // INCOMING MESSAGE
+    // =====================================================
 
     private fun handleIncomingMessage(
 
@@ -1305,6 +1563,28 @@ class BleManager(
         sourcePeer: Peer
 
     ) {
+
+        // =================================================
+        // LIVE LOCATION
+        // =================================================
+
+        if (
+            incoming.message.startsWith(
+                LOCATION_PREFIX + "|"
+            )
+        ) {
+
+            handleIncomingLocation(
+                incoming,
+                sourcePeer
+            )
+
+            return
+        }
+
+        // =================================================
+        // NORMAL MESSAGE
+        // =================================================
 
         if (
             incoming.senderId ==
@@ -1355,12 +1635,6 @@ class BleManager(
         ] =
             newHop
 
-        /*
-         * IMPORTANT:
-         *
-         * timestamp and recordingDurationMs are retained
-         * unchanged when forwarding.
-         */
         val updated =
             incoming.copy(
                 hopCount =
@@ -1390,7 +1664,9 @@ class BleManager(
 
         onStatusChanged?.invoke(
 
-            if (updated.isVoice) {
+            if (
+                updated.isVoice
+            ) {
 
                 "VOICE RECEIVED"
 
@@ -1412,9 +1688,164 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
+    // LOCATION RECEIVE
+    // =====================================================
+
+    private fun handleIncomingLocation(
+
+        incoming: HopMessage,
+
+        sourcePeer: Peer
+
+    ) {
+
+        try {
+
+            /*
+             * Format:
+             *
+             * __AS_LOCATION__|
+             * NODE|
+             * LAT|
+             * LON|
+             * ACCURACY|
+             * TIMESTAMP
+             */
+
+            val parts =
+                incoming.message.split(
+                    "|",
+                    limit = 6
+                )
+
+            if (
+                parts.size != 6
+            ) {
+                return
+            }
+
+            val remoteNode =
+                parts[1].trim()
+
+            val latitude =
+                parts[2]
+                    .trim()
+                    .toDoubleOrNull()
+
+            val longitude =
+                parts[3]
+                    .trim()
+                    .toDoubleOrNull()
+
+            val accuracy =
+                parts[4]
+                    .trim()
+                    .toFloatOrNull()
+
+            val timestamp =
+                parts[5]
+                    .trim()
+                    .toLongOrNull()
+
+            if (
+                remoteNode.isBlank() ||
+                latitude == null ||
+                longitude == null ||
+                accuracy == null ||
+                timestamp == null
+            ) {
+                return
+            }
+
+            if (
+                latitude !in -90.0..90.0 ||
+                longitude !in -180.0..180.0
+            ) {
+                return
+            }
+
+            if (
+                accuracy < 0f
+            ) {
+                return
+            }
+
+            if (
+                remoteNode ==
+                nodeId
+            ) {
+                return
+            }
+
+            val newHop =
+                incoming.hopCount + 1
+
+            if (
+                newHop > MAX_TTL
+            ) {
+                return
+            }
+
+            val location =
+                NodeLocation(
+
+                    nodeId =
+                        remoteNode,
+
+                    latitude =
+                        latitude,
+
+                    longitude =
+                        longitude,
+
+                    accuracyMeters =
+                        accuracy,
+
+                    timestamp =
+                        timestamp,
+
+                    hopCount =
+                        newHop
+                )
+
+            handler.post {
+
+                onLocationReceived?.invoke(
+                    location
+                )
+            }
+
+            /*
+             * Forward the original GPS timestamp and
+             * accuracy through the mesh.
+             */
+            if (
+                incoming.ttl > 1 &&
+                newHop < MAX_TTL
+            ) {
+
+                val updated =
+                    incoming.copy(
+                        hopCount =
+                            newHop
+                    )
+
+                relayMessage(
+                    updated,
+                    sourcePeer
+                )
+            }
+
+        } catch (
+            _: Exception
+        ) {
+        }
+    }
+
+    // =====================================================
     // RELAY
-    // =========================================================
+    // =====================================================
 
     private fun relayMessage(
 
@@ -1436,8 +1867,7 @@ class BleManager(
             return
         }
 
-        var count =
-            0
+        var count = 0
 
         synchronized(peers) {
 
@@ -1446,15 +1876,12 @@ class BleManager(
             ) {
 
                 if (
-                    peer ===
-                    sourcePeer
+                    peer === sourcePeer
                 ) {
                     continue
                 }
 
-                if (
-                    !peer.ready
-                ) {
+                if (!peer.ready) {
                     continue
                 }
 
@@ -1489,17 +1916,27 @@ class BleManager(
                     continue
                 }
 
-                val sentHop =
-                    peer.sentMessages[
-                        outgoing.messageId
-                    ]
+                val isLocation =
+                    message.message.startsWith(
+                        LOCATION_PREFIX + "|"
+                    )
 
                 if (
-                    sentHop != null &&
-                    sentHop <=
-                    outgoing.hopCount
+                    !isLocation
                 ) {
-                    continue
+
+                    val sentHop =
+                        peer.sentMessages[
+                            outgoing.messageId
+                        ]
+
+                    if (
+                        sentHop != null &&
+                        sentHop <=
+                        outgoing.hopCount
+                    ) {
+                        continue
+                    }
                 }
 
                 if (
@@ -1523,7 +1960,9 @@ class BleManager(
             }
         }
 
-        if (count > 0) {
+        if (
+            count > 0
+        ) {
 
             onStatusChanged?.invoke(
                 "FORWARDING TO $count NODE(S)"
@@ -1531,9 +1970,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // HISTORY
-    // =========================================================
+    // =====================================================
 
     private fun notifyHistory() {
 
@@ -1542,7 +1981,8 @@ class BleManager(
                 storedMessages
             ) {
 
-                storedMessages.values
+                storedMessages
+                    .values
                     .toList()
             }
 
@@ -1553,6 +1993,10 @@ class BleManager(
             )
         }
     }
+
+    // =====================================================
+    // CONNECTED COUNT
+    // =====================================================
 
     private fun notifyConnectedCount() {
 
@@ -1566,9 +2010,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // STORAGE
-    // =========================================================
+    // =====================================================
 
     private fun trimStorage() {
 
@@ -1598,9 +2042,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // ADVERTISING
-    // =========================================================
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun startAdvertising() {
@@ -1659,11 +2103,15 @@ class BleManager(
 
         try {
 
-            localAdvertiser.startAdvertising(
-                settings,
-                data,
-                advertiseCallback
-            )
+            localAdvertiser
+                .startAdvertising(
+
+                    settings,
+
+                    data,
+
+                    advertiseCallback
+                )
 
         } catch (
             e: Exception
@@ -1699,9 +2147,9 @@ class BleManager(
             }
         }
 
-    // =========================================================
-    // SCANNING
-    // =========================================================
+    // =====================================================
+    // SCANNING + RSSI
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun startScanning() {
@@ -1736,12 +2184,12 @@ class BleManager(
                         result.scanRecord
                             ?: return
 
-                    val uuids =
+                    val serviceUuids =
                         record.serviceUuids
                             ?: return
 
                     val isAapdaSetu =
-                        uuids.any {
+                        serviceUuids.any {
 
                             it.uuid ==
                                     SERVICE_UUID
@@ -1768,6 +2216,20 @@ class BleManager(
                                 )
                             }
                         }
+
+                    peer.rssi =
+                        result.rssi
+
+                    peer.nodeId?.let {
+                            remoteNode ->
+
+                        onNodeSignalChanged?.invoke(
+
+                            remoteNode,
+
+                            result.rssi
+                        )
+                    }
 
                     onNodeDiscovered?.invoke(
                         "AAPDASETU NODE: ${
@@ -1821,9 +2283,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // CONNECT
-    // =========================================================
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun connectToPeer(
@@ -1842,10 +2304,7 @@ class BleManager(
                 peers.getOrPut(
                     device.address
                 ) {
-
-                    Peer(
-                        device
-                    )
+                    Peer(device)
                 }
             }
 
@@ -1893,7 +2352,9 @@ class BleManager(
 
                 } else {
 
-                    @Suppress("DEPRECATION")
+                    @Suppress(
+                        "DEPRECATION"
+                    )
 
                     device.connectGatt(
 
@@ -1919,7 +2380,9 @@ class BleManager(
                         false
 
                     try {
+
                         peer.gatt?.disconnect()
+
                     } catch (
                         _: Exception
                     ) {
@@ -1948,9 +2411,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
-    // CLIENT CALLBACK
-    // =========================================================
+    // =====================================================
+    // CLIENT GATT
+    // =====================================================
 
     private fun createGattCallback(
         peer: Peer
@@ -2025,7 +2488,9 @@ class BleManager(
                             false
                         }
 
-                    if (!requested) {
+                    if (
+                        !requested
+                    ) {
 
                         try {
 
@@ -2084,7 +2549,9 @@ class BleManager(
                     notifyConnectedCount()
 
                     try {
+
                         gatt.close()
+
                     } catch (
                         _: Exception
                     ) {
@@ -2113,10 +2580,12 @@ class BleManager(
                 ) {
 
                     peer.mtu =
-                        mtu
+                        mtu.coerceAtLeast(
+                            DEFAULT_MTU
+                        )
 
                     onStatusChanged?.invoke(
-                        "MTU $mtu"
+                        "MTU ${peer.mtu}"
                     )
                 }
 
@@ -2199,7 +2668,9 @@ class BleManager(
                             nodeCharacteristic
                         )
 
-                    if (!started) {
+                    if (
+                        !started
+                    ) {
 
                         onStatusChanged?.invoke(
                             "NODE READ DID NOT START"
@@ -2261,7 +2732,6 @@ class BleManager(
                 if (
                     remoteNode.isBlank()
                 ) {
-
                     return
                 }
 
@@ -2297,6 +2767,13 @@ class BleManager(
                 onStatusChanged?.invoke(
                     "READY: $remoteNode"
                 )
+
+                peer.rssi?.let {
+                    onNodeSignalChanged?.invoke(
+                        remoteNode,
+                        it
+                    )
+                }
 
                 notifyConnectedCount()
 
@@ -2375,9 +2852,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // RECONNECT
-    // =========================================================
+    // =====================================================
 
     private fun scheduleReconnect(
         peer: Peer
@@ -2417,9 +2894,9 @@ class BleManager(
         }, RECONNECT_DELAY)
     }
 
-    // =========================================================
+    // =====================================================
     // MESSAGE ID
-    // =========================================================
+    // =====================================================
 
     private fun createMessageId():
             String {
@@ -2434,9 +2911,9 @@ class BleManager(
                     .take(20)
     }
 
-    // =========================================================
+    // =====================================================
     // SEND TEXT
-    // =========================================================
+    // =====================================================
 
     fun createAndSendMessage(
 
@@ -2459,7 +2936,7 @@ class BleManager(
             return
         }
 
-        val location =
+        val hasLocation =
             latitude != null &&
                     longitude != null
 
@@ -2482,7 +2959,7 @@ class BleManager(
                     MAX_TTL,
 
                 hasLocation =
-                    location,
+                    hasLocation,
 
                 latitude =
                     latitude ?: 0.0,
@@ -2505,9 +2982,9 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // SEND VOICE
-    // =========================================================
+    // =====================================================
 
     fun createAndSendVoiceMessage(
 
@@ -2544,7 +3021,7 @@ class BleManager(
             return
         }
 
-        val location =
+        val hasLocation =
             latitude != null &&
                     longitude != null
 
@@ -2567,7 +3044,7 @@ class BleManager(
                     MAX_TTL,
 
                 hasLocation =
-                    location,
+                    hasLocation,
 
                 latitude =
                     latitude ?: 0.0,
@@ -2590,9 +3067,9 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // CREATE OUTGOING
-    // =========================================================
+    // =====================================================
 
     private fun createOutgoingMessage(
         message: HopMessage
@@ -2617,7 +3094,7 @@ class BleManager(
 
         notifyHistory()
 
-        var count =
+        var queued =
             0
 
         synchronized(peers) {
@@ -2672,7 +3149,7 @@ class BleManager(
                     message
                 )
 
-                count++
+                queued++
 
                 processPeerQueue(
                     peer
@@ -2682,15 +3159,19 @@ class BleManager(
 
         onStatusChanged?.invoke(
 
-            if (count > 0) {
+            if (
+                queued > 0
+            ) {
 
-                if (message.isVoice) {
+                if (
+                    message.isVoice
+                ) {
 
-                    "VOICE QUEUED TO $count NODE(S)"
+                    "VOICE QUEUED TO $queued NODE(S)"
 
                 } else {
 
-                    "MESSAGE QUEUED TO $count NODE(S)"
+                    "MESSAGE QUEUED TO $queued NODE(S)"
                 }
 
             } else {
@@ -2700,9 +3181,9 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // RETRY STORED
-    // =========================================================
+    // =====================================================
 
     private fun retryStoredMessages() {
 
@@ -2777,8 +3258,7 @@ class BleManager(
                         }
 
                     if (
-                        outgoing.ttl <=
-                        0
+                        outgoing.ttl <= 0
                     ) {
                         continue
                     }
@@ -2824,25 +3304,33 @@ class BleManager(
         }
     }
 
-    // =========================================================
-    // QUEUE
-    // =========================================================
+    // =====================================================
+    // PROCESS QUEUE
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun processPeerQueue(
         peer: Peer
     ) {
 
+        if (!peer.ready) {
+            return
+        }
+
+        if (peer.gatt == null) {
+            return
+        }
+
         if (
-            !peer.ready ||
-            peer.gatt == null ||
-            peer.messageCharacteristic == null
+            peer.messageCharacteristic ==
+            null
         ) {
             return
         }
 
         if (
-            peer.currentMessage != null
+            peer.currentMessage !=
+            null
         ) {
             return
         }
@@ -2856,22 +3344,32 @@ class BleManager(
         val message =
             peer.queue.removeFirst()
 
-        val previous =
-            peer.sentMessages[
-                message.messageId
-            ]
-
-        if (
-            previous != null &&
-            previous <=
-            message.hopCount
-        ) {
-
-            processPeerQueue(
-                peer
+        val isLocation =
+            message.message.startsWith(
+                LOCATION_PREFIX + "|"
             )
 
-            return
+        if (
+            !isLocation
+        ) {
+
+            val previous =
+                peer.sentMessages[
+                    message.messageId
+                ]
+
+            if (
+                previous != null &&
+                previous <=
+                message.hopCount
+            ) {
+
+                processPeerQueue(
+                    peer
+                )
+
+                return
+            }
         }
 
         if (
@@ -2933,19 +3431,16 @@ class BleManager(
 
         onStatusChanged?.invoke(
 
-            if (
-                message.isVoice
-            ) {
+            when {
 
-                "SENDING VOICE -> ${
-                    peer.nodeId
-                }"
+                isLocation ->
+                    "UPDATING LOCATION -> ${peer.nodeId}"
 
-            } else {
+                message.isVoice ->
+                    "SENDING VOICE -> ${peer.nodeId}"
 
-                "SENDING MESSAGE -> ${
-                    peer.nodeId
-                }"
+                else ->
+                    "SENDING MESSAGE -> ${peer.nodeId}"
             }
         )
 
@@ -2954,16 +3449,17 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // CHUNK SIZE
-    // =========================================================
+    // =====================================================
 
     private fun calculateChunkSize(
         mtu: Int
     ): Int {
 
         if (
-            mtu <= DEFAULT_MTU
+            mtu <=
+            DEFAULT_MTU
         ) {
 
             return MIN_CHUNK_SIZE
@@ -2971,16 +3467,15 @@ class BleManager(
 
         return (
                 mtu - 3
-                )
-            .coerceIn(
+                ).coerceIn(
                 MIN_CHUNK_SIZE,
                 MAX_CHUNK_SIZE
             )
     }
 
-    // =========================================================
-    // SEND CHUNK
-    // =========================================================
+    // =====================================================
+    // SEND NEXT CHUNK
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun sendNextChunk(
@@ -3024,9 +3519,7 @@ class BleManager(
                     return
                 }
 
-        if (
-            !peer.ready
-        ) {
+        if (!peer.ready) {
             return
         }
 
@@ -3034,23 +3527,37 @@ class BleManager(
             peer.chunkIndex + 1
 
         if (
-            next >= chunks.size
+            next >=
+            chunks.size
         ) {
 
-            peer.sentMessages[
-                message.messageId
-            ] =
-                message.hopCount
+            val isLocation =
+                message.message.startsWith(
+                    LOCATION_PREFIX + "|"
+                )
+
+            if (
+                !isLocation
+            ) {
+
+                peer.sentMessages[
+                    message.messageId
+                ] =
+                    message.hopCount
+            }
 
             onStatusChanged?.invoke(
 
-                if (message.isVoice) {
+                when {
 
-                    "VOICE DELIVERED"
+                    isLocation ->
+                        "LOCATION SENT -> ${peer.nodeId}"
 
-                } else {
+                    message.isVoice ->
+                        "VOICE DELIVERED -> ${peer.nodeId}"
 
-                    "MESSAGE DELIVERED"
+                    else ->
+                        "MESSAGE DELIVERED -> ${peer.nodeId}"
                 }
             )
 
@@ -3079,9 +3586,9 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // WRITE
-    // =========================================================
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun writeChunk(
@@ -3097,6 +3604,14 @@ class BleManager(
 
     ) {
 
+        if (!peer.ready) {
+            return
+        }
+
+        if (chunk.isEmpty()) {
+            return
+        }
+
         try {
 
             characteristic.writeType =
@@ -3111,7 +3626,9 @@ class BleManager(
                     characteristic
                 )
 
-            if (!started) {
+            if (
+                !started
+            ) {
 
                 retryCurrentChunk(
                     peer,
@@ -3132,9 +3649,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
-    // RETRY
-    // =========================================================
+    // =====================================================
+    // RETRY CHUNK
+    // =====================================================
 
     private fun retryCurrentChunk(
 
@@ -3231,19 +3748,15 @@ class BleManager(
             }
 
             try {
-
                 peer.gatt?.disconnect()
-
-            } catch (
-                _: Exception
-            ) {
+            } catch (_: Exception) {
             }
         }
     }
 
-    // =========================================================
+    // =====================================================
     // FINISH
-    // =========================================================
+    // =====================================================
 
     private fun finishCurrentMessage(
         peer: Peer
@@ -3269,9 +3782,9 @@ class BleManager(
         }
     }
 
-    // =========================================================
+    // =====================================================
     // DUPLICATE
-    // =========================================================
+    // =====================================================
 
     private fun peerHasMessage(
 
@@ -3305,9 +3818,9 @@ class BleManager(
         return false
     }
 
-    // =========================================================
-    // CHUNKS
-    // =========================================================
+    // =====================================================
+    // CREATE CHUNKS
+    // =====================================================
 
     private fun createChunks(
 
@@ -3354,9 +3867,9 @@ class BleManager(
         return result
     }
 
-    // =========================================================
+    // =====================================================
     // RETRY LOOP
-    // =========================================================
+    // =====================================================
 
     private fun startRetryLoop() {
 
@@ -3388,9 +3901,9 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // STOP
-    // =========================================================
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     fun stop() {
@@ -3402,9 +3915,9 @@ class BleManager(
         )
     }
 
-    // =========================================================
+    // =====================================================
     // INTERNAL STOP
-    // =========================================================
+    // =====================================================
 
     @SuppressLint("MissingPermission")
     private fun stopInternal() {
@@ -3455,17 +3968,43 @@ class BleManager(
 
                 try {
                     peer.gatt?.disconnect()
-                } catch (
-                    _: Exception
-                ) {
+                } catch (_: Exception) {
                 }
 
                 try {
                     peer.gatt?.close()
-                } catch (
-                    _: Exception
-                ) {
+                } catch (_: Exception) {
                 }
+
+                peer.ready =
+                    false
+
+                peer.connecting =
+                    false
+
+                peer.gatt =
+                    null
+
+                peer.messageCharacteristic =
+                    null
+
+                peer.nodeId =
+                    null
+
+                peer.currentMessage =
+                    null
+
+                peer.chunks =
+                    null
+
+                peer.chunkIndex =
+                    -1
+
+                peer.retryCount =
+                    0
+
+                peer.receiveBuffer =
+                    ByteArray(0)
             }
 
             peers.clear()

@@ -4,13 +4,6 @@
     xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!-- ================================================= -->
-    <!-- MICROPHONE PERMISSION -->
-    <!-- ================================================= -->
-
-    <uses-permission
-        android:name="android.permission.RECORD_AUDIO" />
-
-    <!-- ================================================= -->
     <!-- BLUETOOTH PERMISSIONS -->
     <!-- ================================================= -->
 
@@ -32,11 +25,25 @@
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN" />
 
+    <!-- ================================================= -->
+    <!-- LOCATION PERMISSIONS -->
+    <!-- ================================================= -->
+
     <uses-permission
         android:name="android.permission.ACCESS_FINE_LOCATION" />
 
+    <uses-permission
+        android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
     <!-- ================================================= -->
-    <!-- BLUETOOTH HARDWARE -->
+    <!-- MICROPHONE -->
+    <!-- ================================================= -->
+
+    <uses-permission
+        android:name="android.permission.RECORD_AUDIO" />
+
+    <!-- ================================================= -->
+    <!-- BLUETOOTH LE HARDWARE -->
     <!-- ================================================= -->
 
     <uses-feature

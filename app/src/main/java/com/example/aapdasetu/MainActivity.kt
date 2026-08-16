@@ -4,8 +4,6 @@ import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.location.Location
-import android.location.LocationListener
-import android.location.LocationManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
@@ -14,7 +12,6 @@ import android.os.Handler
 import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,19 +37,50 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationCallback
+import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.LocationResult
+import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
 
+// =========================================================
+// LIVE RADAR NODE
+// =========================================================
+
+data class LiveRadarNode(
+    val nodeId: String,
+    val latitude: Double,
+    val longitude: Double,
+    val accuracyMeters: Float,
+    val sourceTimestamp: Long,
+    val receivedAt: Long,
+    val hopCount: Int,
+    val rssi: Int? = null
+)
+
 class MainActivity : ComponentActivity() {
 
     // =====================================================
-    // BLUETOOTH
+    // BLE
     // =====================================================
 
     private lateinit var bleManager: BleManager
+
+    // =====================================================
+    // FUSED LOCATION
+    // =====================================================
+
+    private lateinit var fusedLocationClient:
+            FusedLocationProviderClient
+
+    private var fusedLocationCallback:
+            LocationCallback? = null
 
     // =====================================================
     // NODE
@@ -76,6 +104,30 @@ class MainActivity : ComponentActivity() {
             "Location not fetched yet"
         )
 
+    private val liveRadarNodes =
+        mutableStateOf(
+            emptyMap<String, LiveRadarNode>()
+        )
+
+    private val radarHandler =
+        Handler(
+            Looper.getMainLooper()
+        )
+
+    private val radarCleanupRunnable =
+        object : Runnable {
+
+            override fun run() {
+
+                cleanStaleRadarNodes()
+
+                radarHandler.postDelayed(
+                    this,
+                    RADAR_CLEANUP_INTERVAL_MS
+                )
+            }
+        }
+
     // =====================================================
     // VOICE
     // =====================================================
@@ -83,20 +135,12 @@ class MainActivity : ComponentActivity() {
     private val isRecording =
         mutableStateOf(false)
 
-    /*
-     * Live recording duration.
-     *
-     * UI updates every 100 ms while recording.
-     */
     private val recordingDurationMs =
         mutableStateOf(0L)
 
     private var recordingStartTime =
         0L
 
-    /*
-     * Used if recording is stopped automatically.
-     */
     private var currentAttachLocation =
         false
 
@@ -144,6 +188,10 @@ class MainActivity : ComponentActivity() {
 
     companion object {
 
+        private const val REQUEST_BLUETOOTH = 1001
+        private const val REQUEST_LOCATION = 1002
+        private const val REQUEST_RECORD_AUDIO = 1003
+
         private const val PREFS_NAME =
             "aapdasetu_prefs"
 
@@ -156,906 +204,17 @@ class MainActivity : ComponentActivity() {
         private const val MAX_VOICE_DURATION_MS =
             15000L
 
-        private const val LOCATION_FRESH_WINDOW_MS =
-            2 * 60 * 1000L
+        private const val LIVE_LOCATION_INTERVAL_MS =
+            5000L
 
-        private const val LOCATION_FIX_TIMEOUT_MS =
-            8000L
-    }
+        private const val LIVE_LOCATION_FASTEST_MS =
+            2000L
 
-    // =====================================================
-    // NODE NAME
-    // =====================================================
+        private const val RADAR_NODE_TIMEOUT_MS =
+            30000L
 
-    private fun generateDefaultName(): String {
-
-        return "NODE-" +
-                UUID.randomUUID()
-                    .toString()
-                    .substring(
-                        0,
-                        4
-                    )
-                    .uppercase()
-    }
-
-    private fun sanitizeName(
-        raw: String
-    ): String? {
-
-        val cleaned =
-            raw
-                .trim()
-                .replace(
-                    ";",
-                    ""
-                )
-                .replace(
-                    "\n",
-                    " "
-                )
-                .replace(
-                    "\r",
-                    " "
-                )
-                .take(
-                    MAX_NAME_LENGTH
-                )
-                .trim()
-
-        return if (
-            cleaned.isEmpty()
-        ) {
-
-            null
-
-        } else {
-
-            cleaned
-        }
-    }
-
-    private fun loadSavedNodeName():
-            String? {
-
-        return getSharedPreferences(
-            PREFS_NAME,
-            MODE_PRIVATE
-        )
-            .getString(
-                KEY_NODE_NAME,
-                null
-            )
-    }
-
-    private fun saveNodeName(
-        name: String
-    ) {
-
-        getSharedPreferences(
-            PREFS_NAME,
-            MODE_PRIVATE
-        )
-            .edit()
-            .putString(
-                KEY_NODE_NAME,
-                name
-            )
-            .apply()
-    }
-
-    // =====================================================
-    // FORMAT TIME
-    // =====================================================
-
-    private fun formatDuration(
-        durationMs: Long
-    ): String {
-
-        val totalSeconds =
-            durationMs / 1000L
-
-        val minutes =
-            totalSeconds / 60L
-
-        val seconds =
-            totalSeconds % 60L
-
-        return String.format(
-            Locale.getDefault(),
-            "%02d:%02d",
-            minutes,
-            seconds
-        )
-    }
-
-    private fun formatMessageTime(
-        timestamp: Long
-    ): String {
-
-        return try {
-
-            val formatter =
-                SimpleDateFormat(
-                    "HH:mm",
-                    Locale.getDefault()
-                )
-
-            formatter.format(
-                Date(timestamp)
-            )
-
-        } catch (_: Exception) {
-
-            "--:--"
-        }
-    }
-
-    // =====================================================
-    // PERMISSIONS
-    // =====================================================
-
-    private val permissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestMultiplePermissions()
-        ) { permissions ->
-
-            if (
-                permissions.values.all {
-                    it
-                }
-            ) {
-
-                startBluetoothHop()
-
-            } else {
-
-                // User can press Start again.
-            }
-        }
-
-    private val locationPermissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-
-            if (granted) {
-
-                refreshLocation()
-
-            } else {
-
-                locationStatus.value =
-                    "Location permission denied"
-            }
-        }
-
-    private val recordPermissionLauncher =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-
-            if (granted) {
-
-                startRecording()
-            }
-        }
-
-    private fun hasLocationPermission():
-            Boolean {
-
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.ACCESS_FINE_LOCATION
-        ) ==
-                PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun hasRecordAudioPermission():
-            Boolean {
-
-        return ContextCompat.checkSelfPermission(
-            this,
-            Manifest.permission.RECORD_AUDIO
-        ) ==
-                PackageManager.PERMISSION_GRANTED
-    }
-
-    // =====================================================
-    // LOCATION
-    // =====================================================
-
-    private fun refreshLocation() {
-
-        if (
-            !hasLocationPermission()
-        ) {
-
-            locationPermissionLauncher.launch(
-                Manifest.permission.ACCESS_FINE_LOCATION
-            )
-
-            return
-        }
-
-        locationStatus.value =
-            "Fetching GPS fix..."
-
-        fetchLocation { location ->
-
-            if (
-                location != null
-            ) {
-
-                myLocation.value =
-                    location
-
-                locationStatus.value =
-                    "Lat ${
-                        "%.5f".format(
-                            location.latitude
-                        )
-                    }, Lon ${
-                        "%.5f".format(
-                            location.longitude
-                        )
-                    }"
-
-            } else {
-
-                locationStatus.value =
-                    "Location unavailable. Check that GPS is ON."
-            }
-        }
-    }
-
-    private fun fetchLocation(
-        onResult: (Location?) -> Unit
-    ) {
-
-        if (
-            !hasLocationPermission()
-        ) {
-
-            onResult(null)
-
-            return
-        }
-
-        val locationManager =
-            getSystemService(
-                LOCATION_SERVICE
-            ) as LocationManager
-
-        if (
-            !locationManager.isProviderEnabled(
-                LocationManager.GPS_PROVIDER
-            )
-        ) {
-
-            onResult(null)
-
-            return
-        }
-
-        val last =
-            try {
-
-                locationManager
-                    .getLastKnownLocation(
-                        LocationManager.GPS_PROVIDER
-                    )
-
-            } catch (
-                _: SecurityException
-            ) {
-
-                null
-            }
-
-        if (
-            last != null &&
-            System.currentTimeMillis() -
-            last.time <
-            LOCATION_FRESH_WINDOW_MS
-        ) {
-
-            onResult(
-                last
-            )
-
-            return
-        }
-
-        var settled =
-            false
-
-        val listener =
-            object : LocationListener {
-
-                override fun onLocationChanged(
-                    location: Location
-                ) {
-
-                    if (
-                        settled
-                    ) {
-                        return
-                    }
-
-                    settled =
-                        true
-
-                    locationManager
-                        .removeUpdates(
-                            this
-                        )
-
-                    onResult(
-                        location
-                    )
-                }
-
-                @Deprecated(
-                    "Deprecated in Java"
-                )
-                override fun onStatusChanged(
-                    provider: String?,
-                    status: Int,
-                    extras: Bundle?
-                ) {
-                }
-
-                override fun onProviderEnabled(
-                    provider: String
-                ) {
-                }
-
-                override fun onProviderDisabled(
-                    provider: String
-                ) {
-                }
-            }
-
-        try {
-
-            locationManager
-                .requestLocationUpdates(
-                    LocationManager.GPS_PROVIDER,
-                    0L,
-                    0f,
-                    listener,
-                    Looper.getMainLooper()
-                )
-
-        } catch (
-            _: SecurityException
-        ) {
-
-            onResult(null)
-
-            return
-        }
-
-        Handler(
-            Looper.getMainLooper()
-        ).postDelayed({
-
-            if (
-                !settled
-            ) {
-
-                settled =
-                    true
-
-                locationManager
-                    .removeUpdates(
-                        listener
-                    )
-
-                onResult(
-                    last
-                )
-            }
-
-        }, LOCATION_FIX_TIMEOUT_MS)
-    }
-
-    // =====================================================
-    // START RECORDING
-    // =====================================================
-
-    private fun startRecording() {
-
-        if (
-            !hasRecordAudioPermission()
-        ) {
-
-            recordPermissionLauncher.launch(
-                Manifest.permission.RECORD_AUDIO
-            )
-
-            return
-        }
-
-        /*
-         * Do not start a second recorder.
-         */
-        if (
-            isRecording.value
-        ) {
-            return
-        }
-
-        val file =
-            File(
-                cacheDir,
-                "recording_${
-                    System.currentTimeMillis()
-                }.amr"
-            )
-
-        currentRecordingFile =
-            file
-
-        val recorder =
-            if (
-                Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.S
-            ) {
-
-                MediaRecorder(this)
-
-            } else {
-
-                @Suppress(
-                    "DEPRECATION"
-                )
-
-                MediaRecorder()
-            }
-
-        try {
-
-            recorder.setAudioSource(
-                MediaRecorder.AudioSource.MIC
-            )
-
-            recorder.setOutputFormat(
-                MediaRecorder.OutputFormat.AMR_NB
-            )
-
-            recorder.setAudioEncoder(
-                MediaRecorder.AudioEncoder.AMR_NB
-            )
-
-            /*
-             * Maximum recording duration.
-             */
-            recorder.setMaxDuration(
-                MAX_VOICE_DURATION_MS.toInt()
-            )
-
-            /*
-             * IMPORTANT:
-             *
-             * When Android reaches the maximum duration,
-             * automatically stop and send the voice message.
-             */
-            recorder.setOnInfoListener {
-                    _,
-                    what,
-                    _ ->
-
-                if (
-                    what ==
-                    MediaRecorder
-                        .MEDIA_RECORDER_INFO_MAX_DURATION_REACHED
-                ) {
-
-                    runOnUiThread {
-
-                        if (
-                            isRecording.value
-                        ) {
-
-                            stopRecordingAndSend(
-                                currentAttachLocation
-                            )
-                        }
-                    }
-                }
-            }
-
-            recorder.setOutputFile(
-                file.absolutePath
-            )
-
-            recorder.prepare()
-
-            recorder.start()
-
-            mediaRecorder =
-                recorder
-
-            isRecording.value =
-                true
-
-            recordingStartTime =
-                System.currentTimeMillis()
-
-            recordingDurationMs.value =
-                0L
-
-            recordingHandler.removeCallbacks(
-                recordingTimerRunnable
-            )
-
-            recordingHandler.post(
-                recordingTimerRunnable
-            )
-
-        } catch (
-            e: Exception
-        ) {
-
-            try {
-                recorder.release()
-            } catch (_: Exception) {
-            }
-
-            mediaRecorder =
-                null
-
-            isRecording.value =
-                false
-
-            currentRecordingFile =
-                null
-
-            recordingDurationMs.value =
-                0L
-        }
-    }
-
-    // =====================================================
-    // STOP RECORDING + SEND
-    // =====================================================
-
-    private fun stopRecordingAndSend(
-        attachLocation: Boolean
-    ) {
-
-        if (
-            !isRecording.value &&
-            mediaRecorder == null
-        ) {
-            return
-        }
-
-        /*
-         * Stop timer first.
-         */
-        recordingHandler.removeCallbacks(
-            recordingTimerRunnable
-        )
-
-        val finalDuration =
-            if (
-                recordingStartTime > 0L
-            ) {
-
-                (
-                        System.currentTimeMillis() -
-                                recordingStartTime
-                        )
-                    .coerceAtLeast(
-                        0L
-                    )
-                    .coerceAtMost(
-                        MAX_VOICE_DURATION_MS
-                    )
-
-            } else {
-
-                recordingDurationMs.value
-            }
-
-        recordingDurationMs.value =
-            finalDuration
-
-        val recorder =
-            mediaRecorder
-
-        isRecording.value =
-            false
-
-        if (
-            recorder == null
-        ) {
-
-            recordingStartTime =
-                0L
-
-            return
-        }
-
-        try {
-
-            recorder.stop()
-
-        } catch (
-            _: Exception
-        ) {
-        }
-
-        try {
-
-            recorder.release()
-
-        } catch (
-            _: Exception
-        ) {
-        }
-
-        mediaRecorder =
-            null
-
-        recordingStartTime =
-            0L
-
-        val file =
-            currentRecordingFile
-
-        currentRecordingFile =
-            null
-
-        if (
-            file == null ||
-            !file.exists() ||
-            file.length() == 0L
-        ) {
-
-            return
-        }
-
-        /*
-         * Compress + Base64 encode through AudioUtils.
-         */
-        val base64Audio =
-            AudioUtils.fileToBase64(
-                file
-            )
-
-        /*
-         * Delete temporary recording.
-         */
-        try {
-            file.delete()
-        } catch (_: Exception) {
-        }
-
-        if (
-            base64Audio.isBlank()
-        ) {
-
-            return
-        }
-
-        /*
-         * Send duration along with the voice message.
-         */
-        if (
-            attachLocation &&
-            myLocation.value != null
-        ) {
-
-            val loc =
-                myLocation.value!!
-
-            bleManager.createAndSendVoiceMessage(
-
-                base64Audio,
-
-                finalDuration,
-
-                loc.latitude,
-
-                loc.longitude
-            )
-
-        } else {
-
-            bleManager.createAndSendVoiceMessage(
-
-                base64Audio,
-
-                finalDuration
-            )
-        }
-    }
-
-    // =====================================================
-    // CANCEL RECORDING
-    // =====================================================
-
-    private fun cancelRecording() {
-
-        recordingHandler.removeCallbacks(
-            recordingTimerRunnable
-        )
-
-        val recorder =
-            mediaRecorder
-
-        isRecording.value =
-            false
-
-        mediaRecorder =
-            null
-
-        recordingStartTime =
-            0L
-
-        recordingDurationMs.value =
-            0L
-
-        if (
-            recorder != null
-        ) {
-
-            try {
-
-                recorder.stop()
-
-            } catch (
-                _: Exception
-            ) {
-            }
-
-            try {
-
-                recorder.release()
-
-            } catch (
-                _: Exception
-            ) {
-            }
-        }
-
-        currentRecordingFile
-            ?.delete()
-
-        currentRecordingFile =
-            null
-    }
-
-    // =====================================================
-    // VOICE PLAYBACK
-    // =====================================================
-
-    private fun togglePlayback(
-        message:
-        BleManager.HopMessage
-    ) {
-
-        if (
-            playingMessageId.value ==
-            message.messageId
-        ) {
-
-            stopPlayback()
-
-            return
-        }
-
-        stopPlayback()
-
-        val file =
-            AudioUtils
-                .base64ToPlaybackFile(
-                    cacheDir,
-                    message.message,
-                    message.messageId
-                )
-                ?: return
-
-        try {
-
-            val player =
-                MediaPlayer()
-
-            player.setDataSource(
-                file.absolutePath
-            )
-
-            player.setOnCompletionListener {
-
-                try {
-                    it.release()
-                } catch (_: Exception) {
-                }
-
-                mediaPlayer =
-                    null
-
-                playingMessageId.value =
-                    null
-            }
-
-            player.setOnErrorListener {
-                    mp,
-                    _,
-                    _ ->
-
-                try {
-                    mp.release()
-                } catch (
-                    _: Exception
-                ) {
-                }
-
-                mediaPlayer =
-                    null
-
-                playingMessageId.value =
-                    null
-
-                true
-            }
-
-            player.prepare()
-
-            player.start()
-
-            mediaPlayer =
-                player
-
-            playingMessageId.value =
-                message.messageId
-
-        } catch (
-            _: Exception
-        ) {
-
-            try {
-                mediaPlayer?.release()
-            } catch (_: Exception) {
-            }
-
-            mediaPlayer =
-                null
-
-            playingMessageId.value =
-                null
-        }
-    }
-
-    private fun stopPlayback() {
-
-        try {
-
-            mediaPlayer?.stop()
-
-        } catch (
-            _: Exception
-        ) {
-        }
-
-        try {
-
-            mediaPlayer?.release()
-
-        } catch (
-            _: Exception
-        ) {
-        }
-
-        mediaPlayer =
-            null
-
-        playingMessageId.value =
-            null
+        private const val RADAR_CLEANUP_INTERVAL_MS =
+            5000L
     }
 
     // =====================================================
@@ -1072,6 +231,12 @@ class MainActivity : ComponentActivity() {
 
         bleManager =
             BleManager(this)
+
+        fusedLocationClient =
+            LocationServices
+                .getFusedLocationProviderClient(
+                    this
+                )
 
         val savedName =
             loadSavedNodeName()
@@ -1097,10 +262,6 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-
-            // =================================================
-            // STATE
-            // =================================================
 
             val status =
                 remember {
@@ -1164,7 +325,7 @@ class MainActivity : ComponentActivity() {
                 }
 
             // =================================================
-            // CALLBACKS
+            // STATUS
             // =================================================
 
             bleManager.onStatusChanged =
@@ -1176,6 +337,10 @@ class MainActivity : ComponentActivity() {
                             text
                     }
                 }
+
+            // =================================================
+            // DISCOVERY
+            // =================================================
 
             bleManager.onNodeDiscovered =
                 { node ->
@@ -1195,6 +360,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+            // =================================================
+            // MESSAGE HISTORY
+            // =================================================
+
             bleManager.onMessageHistoryChanged =
                 { history ->
 
@@ -1209,7 +378,112 @@ class MainActivity : ComponentActivity() {
                 }
 
             // =================================================
-            // DELETE DIALOG
+            // LOCATION RECEIVED
+            // =================================================
+
+            bleManager.onLocationReceived =
+                { location ->
+
+                    runOnUiThread {
+
+                        if (
+                            location.nodeId ==
+                            nodeIdState.value
+                        ) {
+
+                            return@runOnUiThread
+                        }
+
+                        val existing =
+                            liveRadarNodes.value[
+                                location.nodeId
+                            ]
+
+                        if (
+                            existing != null &&
+                            location.timestamp <=
+                            existing.sourceTimestamp
+                        ) {
+
+                            return@runOnUiThread
+                        }
+
+                        val updated =
+                            liveRadarNodes.value
+                                .toMutableMap()
+
+                        updated[
+                            location.nodeId
+                        ] =
+                            LiveRadarNode(
+
+                                nodeId =
+                                    stableNodeId(
+                                        location.nodeId
+                                    ),
+
+                                latitude =
+                                    location.latitude,
+
+                                longitude =
+                                    location.longitude,
+
+                                accuracyMeters =
+                                    location.accuracyMeters,
+
+                                sourceTimestamp =
+                                    location.timestamp,
+
+                                receivedAt =
+                                    System.currentTimeMillis(),
+
+                                hopCount =
+                                    location.hopCount,
+
+                                rssi =
+                                    existing?.rssi
+                            )
+
+                        liveRadarNodes.value =
+                            updated
+                    }
+                }
+
+            // =================================================
+            // RSSI RECEIVED
+            // =================================================
+
+            bleManager.onNodeSignalChanged =
+                { node, rssi ->
+
+                    runOnUiThread {
+
+                        val existing =
+                            liveRadarNodes.value[
+                                node
+                            ]
+
+                        if (
+                            existing != null
+                        ) {
+
+                            val updated =
+                                liveRadarNodes.value
+                                    .toMutableMap()
+
+                            updated[node] =
+                                existing.copy(
+                                    rssi = rssi
+                                )
+
+                            liveRadarNodes.value =
+                                updated
+                        }
+                    }
+                }
+
+            // =================================================
+            // DELETE ALL DIALOG
             // =================================================
 
             if (
@@ -1250,7 +524,6 @@ class MainActivity : ComponentActivity() {
                                 showDeleteAllConfirm.value =
                                     false
                             }
-
                         ) {
 
                             Text(
@@ -1268,7 +541,6 @@ class MainActivity : ComponentActivity() {
                                 showDeleteAllConfirm.value =
                                     false
                             }
-
                         ) {
 
                             Text(
@@ -1300,15 +572,16 @@ class MainActivity : ComponentActivity() {
                         )
                 ) {
 
-                    // =========================================
+                    // =================================================
                     // TITLE
-                    // =========================================
+                    // =================================================
 
                     item {
 
                         Text(
                             text =
                                 "AapdaSetu",
+
                             style =
                                 MaterialTheme
                                     .typography
@@ -1321,9 +594,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // =========================================
+                    // =================================================
                     // NODE NAME
-                    // =========================================
+                    // =================================================
 
                     item {
 
@@ -1406,10 +679,9 @@ class MainActivity : ComponentActivity() {
                                         isStarted.value
                                     ) {
 
-                                        bleManager
-                                            .start(
-                                                sanitized
-                                            )
+                                        bleManager.start(
+                                            sanitized
+                                        )
                                     }
                                 }
                             },
@@ -1426,9 +698,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
+                    // =================================================
                     // STATUS
-                    // =========================================
+                    // =================================================
 
                     item {
 
@@ -1455,6 +727,7 @@ class MainActivity : ComponentActivity() {
                                 Text(
                                     text =
                                         "STATUS",
+
                                     style =
                                         MaterialTheme
                                             .typography
@@ -1491,16 +764,17 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
-                    // START BLUETOOTH
-                    // =========================================
+                    // =================================================
+                    // START
+                    // =================================================
 
                     item {
 
                         Button(
 
                             onClick = {
-                                requestPermissions()
+
+                                requestAllPermissions()
                             },
 
                             modifier =
@@ -1525,15 +799,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
-                    // NEARBY NODES
-                    // =========================================
+                    // =================================================
+                    // NEARBY
+                    // =================================================
 
                     item {
 
                         Text(
                             text =
                                 "NEARBY NODES",
+
                             style =
                                 MaterialTheme
                                     .typography
@@ -1567,6 +842,7 @@ class MainActivity : ComponentActivity() {
                             ) {
 
                                 Text(
+
                                     text =
                                         "\uD83D\uDCF1 $node",
 
@@ -1580,9 +856,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
+                    // =================================================
                     // LOCATION
-                    // =========================================
+                    // =================================================
 
                     item {
 
@@ -1609,6 +885,7 @@ class MainActivity : ComponentActivity() {
                                 Text(
                                     text =
                                         "MY LOCATION",
+
                                     style =
                                         MaterialTheme
                                             .typography
@@ -1620,18 +897,14 @@ class MainActivity : ComponentActivity() {
                                         locationStatus.value
                                 )
 
-                                if (
-                                    myLocation.value !=
-                                    null
-                                ) {
+                                myLocation.value?.let {
+                                        location ->
 
                                     Text(
                                         text =
                                             "Latitude: ${
                                                 "%.6f".format(
-                                                    myLocation
-                                                        .value!!
-                                                        .latitude
+                                                    location.latitude
                                                 )
                                             }"
                                     )
@@ -1640,17 +913,23 @@ class MainActivity : ComponentActivity() {
                                         text =
                                             "Longitude: ${
                                                 "%.6f".format(
-                                                    myLocation
-                                                        .value!!
-                                                        .longitude
+                                                    location.longitude
                                                 )
                                             }"
+                                    )
+
+                                    Text(
+                                        text =
+                                            "GPS accuracy: ${
+                                                location.accuracy.toInt()
+                                            } m"
                                     )
                                 }
 
                                 OutlinedButton(
 
                                     onClick = {
+
                                         refreshLocation()
                                     },
 
@@ -1661,16 +940,16 @@ class MainActivity : ComponentActivity() {
                                 ) {
 
                                     Text(
-                                        "REFRESH LOCATION"
+                                        "REFRESH NOW"
                                     )
                                 }
                             }
                         }
                     }
 
-                    // =========================================
+                    // =================================================
                     // ATTACH LOCATION
-                    // =========================================
+                    // =================================================
 
                     item {
 
@@ -1685,7 +964,6 @@ class MainActivity : ComponentActivity() {
 
                             horizontalArrangement =
                                 Arrangement.SpaceBetween
-
                         ) {
 
                             Text(
@@ -1717,15 +995,16 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
-                    // MESSAGE INPUT
-                    // =========================================
+                    // =================================================
+                    // MESSAGE
+                    // =================================================
 
                     item {
 
                         Text(
                             text =
                                 "EMERGENCY MESSAGE",
+
                             style =
                                 MaterialTheme
                                     .typography
@@ -1758,9 +1037,9 @@ class MainActivity : ComponentActivity() {
                         )
                     }
 
-                    // =========================================
-                    // SOS + VOICE
-                    // =========================================
+                    // =================================================
+                    // SEND
+                    // =================================================
 
                     item {
 
@@ -1774,7 +1053,6 @@ class MainActivity : ComponentActivity() {
                                 Arrangement.spacedBy(
                                     10.dp
                                 )
-
                         ) {
 
                             Button(
@@ -1796,7 +1074,7 @@ class MainActivity : ComponentActivity() {
                                             null
                                         ) {
 
-                                            val loc =
+                                            val location =
                                                 myLocation.value!!
 
                                             bleManager
@@ -1804,9 +1082,9 @@ class MainActivity : ComponentActivity() {
 
                                                     text,
 
-                                                    loc.latitude,
+                                                    location.latitude,
 
-                                                    loc.longitude
+                                                    location.longitude
                                                 )
 
                                         } else {
@@ -1825,7 +1103,6 @@ class MainActivity : ComponentActivity() {
                                 modifier =
                                     Modifier
                                         .weight(1f)
-
                             ) {
 
                                 Text(
@@ -1847,11 +1124,6 @@ class MainActivity : ComponentActivity() {
 
                                     } else {
 
-                                        /*
-                                         * Remember the location
-                                         * choice for possible
-                                         * auto-stop at 15 seconds.
-                                         */
                                         currentAttachLocation =
                                             attachLocation.value
 
@@ -1862,7 +1134,6 @@ class MainActivity : ComponentActivity() {
                                 modifier =
                                     Modifier
                                         .weight(1f)
-
                             ) {
 
                                 Text(
@@ -1882,9 +1153,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
-                    // RECORDING STATUS
-                    // =========================================
+                    // =================================================
+                    // RECORDING
+                    // =================================================
 
                     if (
                         isRecording.value
@@ -1893,11 +1164,9 @@ class MainActivity : ComponentActivity() {
                         item {
 
                             Card(
-
                                 modifier =
                                     Modifier
                                         .fillMaxWidth()
-
                             ) {
 
                                 Column(
@@ -1908,18 +1177,16 @@ class MainActivity : ComponentActivity() {
                                                 16.dp
                                             ),
 
+                                    horizontalAlignment =
+                                        Alignment.CenterHorizontally,
+
                                     verticalArrangement =
                                         Arrangement.spacedBy(
                                             8.dp
-                                        ),
-
-                                    horizontalAlignment =
-                                        Alignment.CenterHorizontally
-
+                                        )
                                 ) {
 
                                     Text(
-
                                         text =
                                             "\uD83C\uDFA4 RECORDING",
 
@@ -1944,19 +1211,16 @@ class MainActivity : ComponentActivity() {
 
                                     Text(
                                         text =
-                                            "Maximum ${
-                                                MAX_VOICE_DURATION_MS /
-                                                        1000
-                                            } seconds"
+                                            "Maximum 15 seconds"
                                     )
                                 }
                             }
                         }
                     }
 
-                    // =========================================
+                    // =================================================
                     // MESSAGE HEADER
-                    // =========================================
+                    // =================================================
 
                     item {
 
@@ -1971,7 +1235,6 @@ class MainActivity : ComponentActivity() {
 
                             verticalAlignment =
                                 Alignment.CenterVertically
-
                         ) {
 
                             Text(
@@ -1996,7 +1259,6 @@ class MainActivity : ComponentActivity() {
                                         showDeleteAllConfirm.value =
                                             true
                                     }
-
                                 ) {
 
                                     Text(
@@ -2007,9 +1269,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
+                    // =================================================
                     // CHAT / RADAR
-                    // =========================================
+                    // =================================================
 
                     item {
 
@@ -2023,12 +1285,12 @@ class MainActivity : ComponentActivity() {
                                 Arrangement.spacedBy(
                                     6.dp
                                 )
-
                         ) {
 
                             OutlinedButton(
 
                                 onClick = {
+
                                     viewMode.value =
                                         "CHAT"
                                 },
@@ -2036,7 +1298,6 @@ class MainActivity : ComponentActivity() {
                                 modifier =
                                     Modifier
                                         .weight(1f)
-
                             ) {
 
                                 Text(
@@ -2047,6 +1308,7 @@ class MainActivity : ComponentActivity() {
                             OutlinedButton(
 
                                 onClick = {
+
                                     viewMode.value =
                                         "RADAR"
                                 },
@@ -2054,7 +1316,6 @@ class MainActivity : ComponentActivity() {
                                 modifier =
                                     Modifier
                                         .weight(1f)
-
                             ) {
 
                                 Text(
@@ -2064,9 +1325,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
+                    // =================================================
                     // RADAR
-                    // =========================================
+                    // =================================================
 
                     if (
                         viewMode.value ==
@@ -2075,66 +1336,94 @@ class MainActivity : ComponentActivity() {
 
                         item {
 
-                            val loc =
+                            val myLoc =
                                 myLocation.value
+
+                            val now =
+                                System.currentTimeMillis()
+
+                            val liveNodes =
+                                liveRadarNodes
+                                    .value
+                                    .values
+                                    .filter {
+
+                                        it.nodeId !=
+                                                nodeIdState.value
+                                    }
+                                    .filter {
+
+                                        now -
+                                                it.receivedAt <
+                                                RADAR_NODE_TIMEOUT_MS
+                                    }
+
+                            if (
+                                myLoc == null
+                            ) {
+
+                                Text(
+                                    text =
+                                        "Waiting for automatic GPS location..."
+                                )
+                            }
 
                             val contacts =
                                 if (
-                                    loc == null
+                                    myLoc == null
                                 ) {
 
                                     emptyList()
 
                                 } else {
 
-                                    messages
-                                        .filter {
+                                    liveNodes.map {
+                                            node ->
 
-                                            it.hasLocation &&
-                                                    it.senderId !=
-                                                    nodeIdState.value
-                                        }
-                                        .map { message ->
+                                        val distance =
+                                            LocationUtils
+                                                .distanceMeters(
 
-                                            RadarContact(
+                                                    myLoc.latitude,
+                                                    myLoc.longitude,
 
-                                                label =
-                                                    message.senderId,
+                                                    node.latitude,
+                                                    node.longitude
+                                                )
 
-                                                distanceMeters =
-                                                    LocationUtils
-                                                        .distanceMeters(
+                                        val bearing =
+                                            LocationUtils
+                                                .bearingDegrees(
 
-                                                            loc.latitude,
-                                                            loc.longitude,
+                                                    myLoc.latitude,
+                                                    myLoc.longitude,
 
-                                                            message.latitude,
-                                                            message.longitude
-                                                        ),
+                                                    node.latitude,
+                                                    node.longitude
+                                                )
 
-                                                bearingDegrees =
-                                                    LocationUtils
-                                                        .bearingDegrees(
+                                        RadarContact(
 
-                                                            loc.latitude,
-                                                            loc.longitude,
+                                            nodeId =
+                                                node.nodeId,
 
-                                                            message.latitude,
-                                                            message.longitude
-                                                        )
-                                            )
-                                        }
+                                            label =
+                                                node.nodeId,
+
+                                            distanceMeters =
+                                                distance,
+
+                                            bearingDegrees =
+                                                bearing,
+
+                                            accuracyMeters =
+                                                node.accuracyMeters,
+
+                                            rssi =
+                                                node.rssi
+                                        )
+                                    }
                                 }
-
-                            if (
-                                loc == null
-                            ) {
-
-                                Text(
-                                    text =
-                                        "Fetch your own location first to see the radar."
-                                )
-                            }
 
                             RadarView(
 
@@ -2145,13 +1434,166 @@ class MainActivity : ComponentActivity() {
                                     Modifier
                                         .fillMaxWidth()
                             )
+
+                            if (
+                                liveNodes.isNotEmpty() &&
+                                myLoc != null
+                            ) {
+
+                                Column(
+
+                                    verticalArrangement =
+                                        Arrangement.spacedBy(
+                                            8.dp
+                                        )
+                                ) {
+
+                                    Text(
+
+                                        text =
+                                            "LIVE NODE DETAILS",
+
+                                        style =
+                                            MaterialTheme
+                                                .typography
+                                                .titleMedium
+                                    )
+
+                                    liveNodes.forEach {
+                                            node ->
+
+                                        val distance =
+                                            LocationUtils
+                                                .distanceMeters(
+
+                                                    myLoc.latitude,
+                                                    myLoc.longitude,
+
+                                                    node.latitude,
+                                                    node.longitude
+                                                )
+
+                                        val bearing =
+                                            LocationUtils
+                                                .bearingDegrees(
+
+                                                    myLoc.latitude,
+                                                    myLoc.longitude,
+
+                                                    node.latitude,
+                                                    node.longitude
+                                                )
+
+                                        Card(
+
+                                            modifier =
+                                                Modifier
+                                                    .fillMaxWidth()
+                                        ) {
+
+                                            Column(
+
+                                                modifier =
+                                                    Modifier
+                                                        .padding(
+                                                            12.dp
+                                                        ),
+
+                                                verticalArrangement =
+                                                    Arrangement.spacedBy(
+                                                        4.dp
+                                                    )
+                                            ) {
+
+                                                Text(
+
+                                                    text =
+                                                        "● ${node.nodeId}",
+
+                                                    style =
+                                                        MaterialTheme
+                                                            .typography
+                                                            .titleSmall
+                                                )
+
+                                                Text(
+                                                    text =
+                                                        "GPS distance: ${
+                                                            LocationUtils
+                                                                .formatDistance(
+                                                                    distance
+                                                                )
+                                                        }"
+                                                )
+
+                                                Text(
+                                                    text =
+                                                        "GPS accuracy: ±${
+                                                            node.accuracyMeters.toInt()
+                                                        } m"
+                                                )
+
+                                                Text(
+                                                    text =
+                                                        "Direction: ${
+                                                            LocationUtils
+                                                                .compassLabel(
+                                                                    bearing
+                                                                )
+                                                        } ${
+                                                            "%.1f".format(
+                                                                bearing
+                                                            )
+                                                        }°"
+                                                )
+
+                                                Text(
+                                                    text =
+                                                        "BLE: ${
+                                                            getRssiDescription(
+                                                                node.rssi
+                                                            )
+                                                        }"
+                                                )
+
+                                                Text(
+                                                    text =
+                                                        "Hop: ${node.hopCount}"
+                                                )
+
+                                                Text(
+                                                    text =
+                                                        "Last seen: ${
+                                                            formatLastSeen(
+                                                                node.receivedAt
+                                                            )
+                                                        }"
+                                                )
+
+                                                Text(
+                                                    text =
+                                                        "Coordinates: ${
+                                                            "%.6f".format(
+                                                                node.latitude
+                                                            )
+                                                        }, ${
+                                                            "%.6f".format(
+                                                                node.longitude
+                                                            )
+                                                        }"
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
 
                     } else {
 
-                        // =====================================
+                        // =================================================
                         // CHAT
-                        // =====================================
+                        // =================================================
 
                         if (
                             messages.isEmpty()
@@ -2160,11 +1602,9 @@ class MainActivity : ComponentActivity() {
                             item {
 
                                 Card(
-
                                     modifier =
                                         Modifier
                                             .fillMaxWidth()
-
                                 ) {
 
                                     Text(
@@ -2192,32 +1632,32 @@ class MainActivity : ComponentActivity() {
                                     it.messageId
                                 }
 
-                            ) { hopMessage ->
+                            ) { message ->
 
                                 MessageCard(
 
                                     message =
-                                        hopMessage,
+                                        message,
 
                                     myNodeId =
                                         nodeIdState.value,
 
                                     isPlaying =
                                         playingMessageId.value ==
-                                                hopMessage.messageId,
+                                                message.messageId,
 
                                     onDelete = {
 
                                         bleManager
                                             .deleteMessage(
-                                                hopMessage.messageId
+                                                message.messageId
                                             )
                                     },
 
                                     onTogglePlayback = {
 
                                         togglePlayback(
-                                            hopMessage
+                                            message
                                         )
                                     }
                                 )
@@ -2225,9 +1665,9 @@ class MainActivity : ComponentActivity() {
                         }
                     }
 
-                    // =========================================
-                    // BOTTOM
-                    // =========================================
+                    // =================================================
+                    // FOOTER
+                    // =================================================
 
                     item {
 
@@ -2245,7 +1685,6 @@ class MainActivity : ComponentActivity() {
                                 Arrangement.spacedBy(
                                     5.dp
                                 )
-
                         ) {
 
                             Text(
@@ -2255,12 +1694,17 @@ class MainActivity : ComponentActivity() {
 
                             Text(
                                 text =
-                                    "Bluetooth messages can travel through multiple hops."
+                                    "Automatic GPS location is active while the mesh is running."
                             )
 
                             Text(
                                 text =
-                                    "Scroll up/down to access all features."
+                                    "GPS distance is shown with the sender's GPS accuracy."
+                            )
+
+                            Text(
+                                text =
+                                    "BLE RSSI indicates proximity and is not an exact distance."
                             )
                         }
                     }
@@ -2298,7 +1742,6 @@ class MainActivity : ComponentActivity() {
             modifier =
                 Modifier
                     .fillMaxWidth()
-
         ) {
 
             Column(
@@ -2313,7 +1756,6 @@ class MainActivity : ComponentActivity() {
                     Arrangement.spacedBy(
                         8.dp
                     )
-
             ) {
 
                 Text(
@@ -2349,18 +1791,14 @@ class MainActivity : ComponentActivity() {
 
                     verticalAlignment =
                         Alignment.CenterVertically
-
                 ) {
 
                     Text(
-
                         text =
-                            "FROM: " +
-                                    message.senderId
+                            "FROM: ${message.senderId}"
                     )
 
                     Text(
-
                         text =
                             formatMessageTime(
                                 message.timestamp
@@ -2373,7 +1811,6 @@ class MainActivity : ComponentActivity() {
                 ) {
 
                     Text(
-
                         text =
                             "\uD83C\uDFA4 Voice • ${
                                 formatDuration(
@@ -2385,6 +1822,7 @@ class MainActivity : ComponentActivity() {
                 } else {
 
                     Text(
+
                         text =
                             message.message,
 
@@ -2397,14 +1835,12 @@ class MainActivity : ComponentActivity() {
 
                 Text(
                     text =
-                        "HOP: " +
-                                message.hopCount
+                        "HOP: ${message.hopCount}"
                 )
 
                 Text(
                     text =
-                        "TTL: " +
-                                message.ttl
+                        "TTL: ${message.ttl}"
                 )
 
                 if (
@@ -2412,7 +1848,6 @@ class MainActivity : ComponentActivity() {
                 ) {
 
                     Text(
-
                         text =
                             "\uD83D\uDCCD ${
                                 "%.5f".format(
@@ -2439,7 +1874,6 @@ class MainActivity : ComponentActivity() {
                         modifier =
                             Modifier
                                 .fillMaxWidth()
-
                     ) {
 
                         Text(
@@ -2467,7 +1901,6 @@ class MainActivity : ComponentActivity() {
                     modifier =
                         Modifier
                             .fillMaxWidth()
-
                 ) {
 
                     Text(
@@ -2479,43 +1912,236 @@ class MainActivity : ComponentActivity() {
     }
 
     // =====================================================
-    // REQUEST PERMISSIONS
+    // PERMISSIONS
     // =====================================================
 
-    private fun requestPermissions() {
+    private fun requestAllPermissions() {
 
+        /*
+         * Android 12+
+         */
         if (
             Build.VERSION.SDK_INT >=
             Build.VERSION_CODES.S
         ) {
 
-            permissionLauncher.launch(
+            val bluetoothMissing =
+                !hasPermission(
+                    Manifest.permission
+                        .BLUETOOTH_SCAN
+                ) ||
+                        !hasPermission(
+                            Manifest.permission
+                                .BLUETOOTH_CONNECT
+                        ) ||
+                        !hasPermission(
+                            Manifest.permission
+                                .BLUETOOTH_ADVERTISE
+                        )
+
+            if (
+                bluetoothMissing
+            ) {
+
+                requestPermissions(
+
+                    arrayOf(
+
+                        Manifest.permission
+                            .BLUETOOTH_SCAN,
+
+                        Manifest.permission
+                            .BLUETOOTH_CONNECT,
+
+                        Manifest.permission
+                            .BLUETOOTH_ADVERTISE
+                    ),
+
+                    REQUEST_BLUETOOTH
+                )
+
+                return
+            }
+        }
+
+        /*
+         * Location is required for radar.
+         */
+        if (
+            !hasFineLocationPermission()
+        ) {
+
+            requestPermissions(
 
                 arrayOf(
 
-                    Manifest.permission.BLUETOOTH_SCAN,
+                    Manifest.permission
+                        .ACCESS_FINE_LOCATION,
 
-                    Manifest.permission.BLUETOOTH_CONNECT,
+                    Manifest.permission
+                        .ACCESS_COARSE_LOCATION
+                ),
 
-                    Manifest.permission.BLUETOOTH_ADVERTISE,
-
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
+                REQUEST_LOCATION
             )
 
-        } else {
+            return
+        }
 
-            permissionLauncher.launch(
+        startBluetoothHop()
+    }
+
+    private fun hasPermission(
+        permission: String
+    ): Boolean {
+
+        return ContextCompat.checkSelfPermission(
+            this,
+            permission
+        ) ==
+                PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun hasLocationPermission():
+            Boolean {
+
+        return hasPermission(
+            Manifest.permission
+                .ACCESS_FINE_LOCATION
+        ) ||
+                hasPermission(
+                    Manifest.permission
+                        .ACCESS_COARSE_LOCATION
+                )
+    }
+
+    private fun hasFineLocationPermission():
+            Boolean {
+
+        return hasPermission(
+            Manifest.permission
+                .ACCESS_FINE_LOCATION
+        )
+    }
+
+    private fun requestLocationOnly() {
+
+        requestPermissions(
+
+            arrayOf(
+
+                Manifest.permission
+                    .ACCESS_FINE_LOCATION,
+
+                Manifest.permission
+                    .ACCESS_COARSE_LOCATION
+            ),
+
+            REQUEST_LOCATION
+        )
+    }
+
+    private fun requestMicrophone() {
+
+        if (
+            !hasPermission(
+                Manifest.permission
+                    .RECORD_AUDIO
+            )
+        ) {
+
+            requestPermissions(
 
                 arrayOf(
+                    Manifest.permission
+                        .RECORD_AUDIO
+                ),
 
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
+                REQUEST_RECORD_AUDIO
             )
+
+            return
+        }
+
+        startRecording()
+    }
+
+    // =====================================================
+    // PERMISSION RESULT
+    // =====================================================
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray
+    ) {
+
+        super.onRequestPermissionsResult(
+            requestCode,
+            permissions,
+            grantResults
+        )
+
+        when (requestCode) {
+
+            REQUEST_BLUETOOTH -> {
+
+                val granted =
+                    grantResults.isNotEmpty() &&
+                            grantResults.all {
+                                it ==
+                                        PackageManager
+                                            .PERMISSION_GRANTED
+                            }
+
+                if (
+                    granted
+                ) {
+
+                    requestAllPermissions()
+                }
+            }
+
+            REQUEST_LOCATION -> {
+
+                val granted =
+                    grantResults.isNotEmpty() &&
+                            grantResults.any {
+                                it ==
+                                        PackageManager
+                                            .PERMISSION_GRANTED
+                            }
+
+                if (
+                    granted
+                ) {
+
+                    startBluetoothHop()
+
+                } else {
+
+                    locationStatus.value =
+                        "Location permission denied"
+                }
+            }
+
+            REQUEST_RECORD_AUDIO -> {
+
+                val granted =
+                    grantResults.isNotEmpty() &&
+                            grantResults.all {
+                                it ==
+                                        PackageManager
+                                            .PERMISSION_GRANTED
+                            }
+
+                if (
+                    granted
+                ) {
+
+                    startRecording()
+                }
+            }
         }
     }
 
@@ -2534,6 +2160,12 @@ class MainActivity : ComponentActivity() {
             bluetoothManager.adapter
 
         if (
+            adapter == null
+        ) {
+            return
+        }
+
+        if (
             !adapter.isEnabled
         ) {
 
@@ -2548,11 +2180,957 @@ class MainActivity : ComponentActivity() {
 
         isStarted.value =
             true
+
+        if (
+            hasFineLocationPermission()
+        ) {
+
+            startAutomaticLocation()
+
+        } else {
+
+            requestLocationOnly()
+        }
     }
 
     private fun statusBluetoothDisabled() {
-
         // User must enable Bluetooth.
+    }
+
+    // =====================================================
+    // LOCATION
+    // =====================================================
+
+    private fun startAutomaticLocation() {
+
+        if (
+            !hasFineLocationPermission()
+        ) {
+
+            requestLocationOnly()
+
+            return
+        }
+
+        stopAutomaticLocation()
+
+        val request =
+            LocationRequest.Builder(
+
+                Priority
+                    .PRIORITY_HIGH_ACCURACY,
+
+                LIVE_LOCATION_INTERVAL_MS
+
+            )
+                .setMinUpdateIntervalMillis(
+                    LIVE_LOCATION_FASTEST_MS
+                )
+                .setWaitForAccurateLocation(
+                    false
+                )
+                .build()
+
+        val callback =
+            object :
+                LocationCallback() {
+
+                override fun onLocationResult(
+                    result: LocationResult
+                ) {
+
+                    for (
+                    location in
+                    result.locations
+                    ) {
+
+                        handleMyLocation(
+                            location
+                        )
+                    }
+                }
+            }
+
+        fusedLocationCallback =
+            callback
+
+        try {
+
+            fusedLocationClient
+                .requestLocationUpdates(
+
+                    request,
+
+                    callback,
+
+                    Looper.getMainLooper()
+                )
+
+        } catch (
+            _: SecurityException
+        ) {
+
+            locationStatus.value =
+                "Location permission denied"
+
+            return
+        }
+
+        /*
+         * Use last known location immediately.
+         */
+        try {
+
+            fusedLocationClient
+                .lastLocation
+                .addOnSuccessListener {
+                        location ->
+
+                    if (
+                        location != null
+                    ) {
+
+                        handleMyLocation(
+                            location
+                        )
+                    }
+                }
+
+        } catch (
+            _: SecurityException
+        ) {
+        }
+
+        radarHandler
+            .removeCallbacks(
+                radarCleanupRunnable
+            )
+
+        radarHandler
+            .post(
+                radarCleanupRunnable
+            )
+    }
+
+    private fun stopAutomaticLocation() {
+
+        fusedLocationCallback?.let {
+
+            try {
+
+                fusedLocationClient
+                    .removeLocationUpdates(
+                        it
+                    )
+
+            } catch (
+                _: SecurityException
+            ) {
+            }
+        }
+
+        fusedLocationCallback =
+            null
+
+        radarHandler
+            .removeCallbacks(
+                radarCleanupRunnable
+            )
+    }
+
+    private fun handleMyLocation(
+        location: Location
+    ) {
+
+        if (
+            !location.latitude.isFinite() ||
+            !location.longitude.isFinite()
+        ) {
+            return
+        }
+
+        myLocation.value =
+            location
+
+        locationStatus.value =
+            buildString {
+
+                append(
+                    "AUTO • Lat ${
+                        "%.6f".format(
+                            location.latitude
+                        )
+                    }, Lon ${
+                        "%.6f".format(
+                            location.longitude
+                        )
+                    }"
+                )
+
+                if (
+                    location.accuracy > 0f
+                ) {
+
+                    append(
+                        " • ±${
+                            location.accuracy.toInt()
+                        }m"
+                    )
+                }
+            }
+
+        if (
+            isStarted.value
+        ) {
+
+            val accuracy =
+                if (
+                    location.accuracy > 0f
+                ) {
+
+                    location.accuracy
+
+                } else {
+
+                    999f
+                }
+
+            bleManager.sendLocationUpdate(
+
+                location.latitude,
+
+                location.longitude,
+
+                accuracy
+            )
+        }
+    }
+
+    private fun refreshLocation() {
+
+        if (
+            !hasFineLocationPermission()
+        ) {
+
+            requestLocationOnly()
+
+            return
+        }
+
+        locationStatus.value =
+            "Fetching latest GPS location..."
+
+        startAutomaticLocation()
+
+        try {
+
+            fusedLocationClient
+                .lastLocation
+                .addOnSuccessListener {
+                        location ->
+
+                    if (
+                        location != null
+                    ) {
+
+                        handleMyLocation(
+                            location
+                        )
+                    } else {
+
+                        locationStatus.value =
+                            "Waiting for a new GPS fix..."
+                    }
+                }
+
+        } catch (
+            _: SecurityException
+        ) {
+        }
+    }
+
+    private fun cleanStaleRadarNodes() {
+
+        val now =
+            System.currentTimeMillis()
+
+        val filtered =
+            liveRadarNodes.value
+                .filterValues {
+
+                    now -
+                            it.receivedAt <
+                            RADAR_NODE_TIMEOUT_MS
+                }
+
+        if (
+            filtered.size !=
+            liveRadarNodes.value.size
+        ) {
+
+            liveRadarNodes.value =
+                filtered
+        }
+    }
+
+    // =====================================================
+    // NODE NAME
+    // =====================================================
+
+    private fun generateDefaultName(): String {
+
+        return "NODE-" +
+                UUID.randomUUID()
+                    .toString()
+                    .substring(
+                        0,
+                        4
+                    )
+                    .uppercase()
+    }
+
+    private fun sanitizeName(
+        raw: String
+    ): String? {
+
+        val cleaned =
+            raw
+                .trim()
+                .replace(
+                    ";",
+                    ""
+                )
+                .replace(
+                    "\n",
+                    " "
+                )
+                .replace(
+                    "\r",
+                    " "
+                )
+                .take(
+                    MAX_NAME_LENGTH
+                )
+                .trim()
+
+        return if (
+            cleaned.isEmpty()
+        ) {
+            null
+        } else {
+            cleaned
+        }
+    }
+
+    private fun loadSavedNodeName():
+            String? {
+
+        return getSharedPreferences(
+            PREFS_NAME,
+            MODE_PRIVATE
+        )
+            .getString(
+                KEY_NODE_NAME,
+                null
+            )
+    }
+
+    private fun saveNodeName(
+        name: String
+    ) {
+
+        getSharedPreferences(
+            PREFS_NAME,
+            MODE_PRIVATE
+        )
+            .edit()
+            .putString(
+                KEY_NODE_NAME,
+                name
+            )
+            .apply()
+    }
+
+    private fun stableNodeId(
+        raw: String
+    ): String {
+
+        return raw
+            .trim()
+            .ifBlank {
+                "UNKNOWN"
+            }
+    }
+
+    // =====================================================
+    // TIME
+    // =====================================================
+
+    private fun formatDuration(
+        durationMs: Long
+    ): String {
+
+        val totalSeconds =
+            durationMs / 1000L
+
+        val minutes =
+            totalSeconds / 60L
+
+        val seconds =
+            totalSeconds % 60L
+
+        return String.format(
+            Locale.getDefault(),
+            "%02d:%02d",
+            minutes,
+            seconds
+        )
+    }
+
+    private fun formatMessageTime(
+        timestamp: Long
+    ): String {
+
+        return try {
+
+            SimpleDateFormat(
+                "HH:mm",
+                Locale.getDefault()
+            ).format(
+                Date(timestamp)
+            )
+
+        } catch (
+            _: Exception
+        ) {
+
+            "--:--"
+        }
+    }
+
+    private fun formatLastSeen(
+        timestamp: Long
+    ): String {
+
+        val elapsed =
+            (
+                    System.currentTimeMillis() -
+                            timestamp
+                    )
+                .coerceAtLeast(
+                    0L
+                )
+
+        val seconds =
+            elapsed / 1000L
+
+        return when {
+
+            seconds <= 1L ->
+                "just now"
+
+            seconds < 60L ->
+                "$seconds sec ago"
+
+            else -> {
+
+                val minutes =
+                    seconds / 60L
+
+                if (
+                    minutes == 1L
+                ) {
+
+                    "1 min ago"
+
+                } else {
+
+                    "$minutes min ago"
+                }
+            }
+        }
+    }
+
+    // =====================================================
+    // RSSI
+    // =====================================================
+
+    private fun getRssiDescription(
+        rssi: Int?
+    ): String {
+
+        if (
+            rssi == null
+        ) {
+
+            return "Unknown"
+        }
+
+        return when {
+
+            rssi >= -55 ->
+                "$rssi dBm • VERY NEAR"
+
+            rssi >= -67 ->
+                "$rssi dBm • NEAR"
+
+            rssi >= -80 ->
+                "$rssi dBm • MODERATE"
+
+            else ->
+                "$rssi dBm • WEAK"
+        }
+    }
+
+    // =====================================================
+    // VOICE
+    // =====================================================
+
+    private fun startRecording() {
+
+        if (
+            !hasPermission(
+                Manifest.permission.RECORD_AUDIO
+            )
+        ) {
+
+            requestMicrophone()
+
+            return
+        }
+
+        if (
+            isRecording.value
+        ) {
+            return
+        }
+
+        val file =
+            File(
+                cacheDir,
+                "recording_${
+                    System.currentTimeMillis()
+                }.amr"
+            )
+
+        currentRecordingFile =
+            file
+
+        val recorder =
+            if (
+                Build.VERSION.SDK_INT >=
+                Build.VERSION_CODES.S
+            ) {
+
+                MediaRecorder(this)
+
+            } else {
+
+                @Suppress("DEPRECATION")
+                MediaRecorder()
+            }
+
+        try {
+
+            recorder.setAudioSource(
+                MediaRecorder.AudioSource.MIC
+            )
+
+            recorder.setOutputFormat(
+                MediaRecorder.OutputFormat
+                    .AMR_NB
+            )
+
+            recorder.setAudioEncoder(
+                MediaRecorder.AudioEncoder
+                    .AMR_NB
+            )
+
+            recorder.setMaxDuration(
+                MAX_VOICE_DURATION_MS.toInt()
+            )
+
+            recorder.setOnInfoListener {
+                    _,
+                    what,
+                    _ ->
+
+                if (
+                    what ==
+                    MediaRecorder
+                        .MEDIA_RECORDER_INFO_MAX_DURATION_REACHED
+                ) {
+
+                    runOnUiThread {
+
+                        if (
+                            isRecording.value
+                        ) {
+
+                            stopRecordingAndSend(
+                                currentAttachLocation
+                            )
+                        }
+                    }
+                }
+            }
+
+            recorder.setOutputFile(
+                file.absolutePath
+            )
+
+            recorder.prepare()
+            recorder.start()
+
+            mediaRecorder =
+                recorder
+
+            isRecording.value =
+                true
+
+            recordingStartTime =
+                System.currentTimeMillis()
+
+            recordingDurationMs.value =
+                0L
+
+            recordingHandler
+                .removeCallbacks(
+                    recordingTimerRunnable
+                )
+
+            recordingHandler.post(
+                recordingTimerRunnable
+            )
+
+        } catch (
+            _: Exception
+        ) {
+
+            try {
+                recorder.release()
+            } catch (
+                _: Exception
+            ) {
+            }
+
+            mediaRecorder =
+                null
+
+            isRecording.value =
+                false
+
+            currentRecordingFile =
+                null
+        }
+    }
+
+    private fun stopRecordingAndSend(
+        attachLocation: Boolean
+    ) {
+
+        if (
+            !isRecording.value &&
+            mediaRecorder == null
+        ) {
+            return
+        }
+
+        recordingHandler
+            .removeCallbacks(
+                recordingTimerRunnable
+            )
+
+        val finalDuration =
+            (
+                    System.currentTimeMillis() -
+                            recordingStartTime
+                    )
+                .coerceAtLeast(
+                    0L
+                )
+                .coerceAtMost(
+                    MAX_VOICE_DURATION_MS
+                )
+
+        recordingDurationMs.value =
+            finalDuration
+
+        val recorder =
+            mediaRecorder
+
+        isRecording.value =
+            false
+
+        if (
+            recorder == null
+        ) {
+
+            recordingStartTime =
+                0L
+
+            return
+        }
+
+        try {
+            recorder.stop()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        try {
+            recorder.release()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        mediaRecorder =
+            null
+
+        recordingStartTime =
+            0L
+
+        val file =
+            currentRecordingFile
+
+        currentRecordingFile =
+            null
+
+        if (
+            file == null ||
+            !file.exists() ||
+            file.length() == 0L
+        ) {
+            return
+        }
+
+        val base64Audio =
+            AudioUtils.fileToBase64(
+                file
+            )
+
+        try {
+            file.delete()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        if (
+            base64Audio.isBlank()
+        ) {
+            return
+        }
+
+        if (
+            attachLocation &&
+            myLocation.value != null
+        ) {
+
+            val location =
+                myLocation.value!!
+
+            bleManager
+                .createAndSendVoiceMessage(
+
+                    base64Audio,
+
+                    finalDuration,
+
+                    location.latitude,
+
+                    location.longitude
+                )
+
+        } else {
+
+            bleManager
+                .createAndSendVoiceMessage(
+
+                    base64Audio,
+
+                    finalDuration
+                )
+        }
+    }
+
+    private fun cancelRecording() {
+
+        recordingHandler
+            .removeCallbacks(
+                recordingTimerRunnable
+            )
+
+        val recorder =
+            mediaRecorder
+
+        isRecording.value =
+            false
+
+        mediaRecorder =
+            null
+
+        recordingStartTime =
+            0L
+
+        recordingDurationMs.value =
+            0L
+
+        if (
+            recorder != null
+        ) {
+
+            try {
+                recorder.stop()
+            } catch (
+                _: Exception
+            ) {
+            }
+
+            try {
+                recorder.release()
+            } catch (
+                _: Exception
+            ) {
+            }
+        }
+
+        currentRecordingFile?.delete()
+
+        currentRecordingFile =
+            null
+    }
+
+    // =====================================================
+    // PLAYBACK
+    // =====================================================
+
+    private fun togglePlayback(
+        message:
+        BleManager.HopMessage
+    ) {
+
+        if (
+            playingMessageId.value ==
+            message.messageId
+        ) {
+
+            stopPlayback()
+
+            return
+        }
+
+        stopPlayback()
+
+        val file =
+            AudioUtils
+                .base64ToPlaybackFile(
+
+                    cacheDir,
+
+                    message.message,
+
+                    message.messageId
+                )
+                ?: return
+
+        try {
+
+            val player =
+                MediaPlayer()
+
+            player.setDataSource(
+                file.absolutePath
+            )
+
+            player.setOnCompletionListener {
+
+                try {
+                    it.release()
+                } catch (
+                    _: Exception
+                ) {
+                }
+
+                mediaPlayer =
+                    null
+
+                playingMessageId.value =
+                    null
+            }
+
+            player.setOnErrorListener {
+                    mp,
+                    _,
+                    _ ->
+
+                try {
+                    mp.release()
+                } catch (
+                    _: Exception
+                ) {
+                }
+
+                mediaPlayer =
+                    null
+
+                playingMessageId.value =
+                    null
+
+                true
+            }
+
+            player.prepare()
+            player.start()
+
+            mediaPlayer =
+                player
+
+            playingMessageId.value =
+                message.messageId
+
+        } catch (
+            _: Exception
+        ) {
+
+            try {
+                mediaPlayer?.release()
+            } catch (
+                _: Exception
+            ) {
+            }
+
+            mediaPlayer =
+                null
+
+            playingMessageId.value =
+                null
+        }
+    }
+
+    private fun stopPlayback() {
+
+        try {
+            mediaPlayer?.stop()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        try {
+            mediaPlayer?.release()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        mediaPlayer =
+            null
+
+        playingMessageId.value =
+            null
     }
 
     // =====================================================
@@ -2561,9 +3139,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
 
-        recordingHandler.removeCallbacks(
-            recordingTimerRunnable
-        )
+        stopAutomaticLocation()
+
+        recordingHandler
+            .removeCallbacks(
+                recordingTimerRunnable
+            )
 
         stopPlayback()
 
@@ -2571,7 +3152,9 @@ class MainActivity : ComponentActivity() {
 
         try {
             bleManager.stop()
-        } catch (_: Exception) {
+        } catch (
+            _: Exception
+        ) {
         }
 
         super.onDestroy()
