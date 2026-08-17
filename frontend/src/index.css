@@ -1,0 +1,65 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --font-primary: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --bg-gradient: linear-gradient(145deg, #eef0fd 0%, #e6e9fa 40%, #f4f2ff 100%);
+  --card-bg: rgba(255, 255, 255, 0.95);
+  --primary-purple: #5c4df0;
+  --primary-purple-hover: #4d3ee0;
+  --primary-purple-light: #ece9fe;
+  --primary-purple-glow: rgba(92, 77, 240, 0.25);
+  --text-main: #1e2029;
+  --text-muted: #828799;
+  --text-secondary: #4b5162;
+  --border-light: #e8ebf4;
+  --input-bg: #fafbfe;
+  --input-focus-border: #7062f3;
+  --shadow-card: 0 20px 50px -10px rgba(85, 95, 150, 0.12), 0 0 1px 1px rgba(255, 255, 255, 0.8) inset;
+  --shadow-button: 0 10px 24px -4px rgba(92, 77, 240, 0.38);
+  --radius-lg: 28px;
+  --radius-md: 16px;
+  --radius-sm: 12px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  min-height: 100vh;
+  width: 100%;
+  font-family: var(--font-primary);
+  background: var(--bg-gradient);
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+button {
+  font-family: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
+input {
+  font-family: inherit;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
