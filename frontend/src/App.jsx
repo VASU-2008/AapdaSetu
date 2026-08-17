@@ -10,7 +10,7 @@ const MainAppContent = () => {
   return (
     <div className="app-root-container">
       {/* Toast Notification Layer */}
-      <Toast toast={toast} onClose={() => {}} />
+      <Toast toast={toast} onClose={() => { }} />
 
       {/* Main Content: Dashboard when logged in, or Auth Showcase when logged out */}
       {user ? <DashboardView /> : <AuthContainer />}

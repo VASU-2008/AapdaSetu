@@ -10,9 +10,8 @@ import java.util.concurrent.TimeUnit
 
 object RetrofitClient {
 
-    // 10.0.2.2 points to localhost on the host computer from the Android Emulator.
-    // For physical devices, set this to your computer's local Wi-Fi IP (e.g. "http://192.168.1.X:3000/")
-    var baseUrl: String = "http://10.0.2.2:3000/"
+    // Default to your current local Wi-Fi IP so physical devices and emulators can connect directly.
+    var baseUrl: String = "http://192.168.0.103:3000/"
 
     private var authToken: String? = null
 

@@ -11,6 +11,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -32,6 +33,8 @@ fun RegisterScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    var showServerIpDialog by remember { mutableStateOf(false) }
+    var tempIp by remember { mutableStateOf(uiState.serverIp) }
 
     LaunchedEffect(uiState.errorMessage) {
         uiState.errorMessage?.let {
@@ -66,19 +69,36 @@ fun RegisterScreen(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
-                // Back Button
-                IconButton(
-                    onClick = onNavigateToLogin,
-                    modifier = Modifier.size(36.dp)
+                // Top Nav Row: Back Button & Server Settings
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Back to login",
-                        tint = TextMain
-                    )
+                    IconButton(
+                        onClick = onNavigateToLogin,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back to login",
+                            tint = TextMain
+                        )
+                    }
+
+                    IconButton(
+                        onClick = { showServerIpDialog = true },
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = "Configure Backend Server",
+                            tint = Color(0xFFCBD4E6)
+                        )
+                    }
                 }
 
-                // Top Header Row with Title and 3D Badge
+                // Header Row with Title and 3D Badge
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -176,5 +196,43 @@ fun RegisterScreen(
                 )
             }
         }
+    }
+
+    if (showServerIpDialog) {
+        AlertDialog(
+            onDismissRequest = { showServerIpDialog = false },
+            title = { Text("Backend Server URL", fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Your Mac's Wi-Fi IP is: http://192.168.0.103:3000/\n(Make sure phone is on the same Wi-Fi network)",
+                        fontSize = 12.sp,
+                        color = TextMuted
+                    )
+                    OutlinedTextField(
+                        value = tempIp,
+                        onValueChange = { tempIp = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.setServerIp(tempIp)
+                        showServerIpDialog = false
+                        Toast.makeText(context, "Server updated to $tempIp", Toast.LENGTH_SHORT).show()
+                    }
+                ) {
+                    Text("Save")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showServerIpDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
     }
 }

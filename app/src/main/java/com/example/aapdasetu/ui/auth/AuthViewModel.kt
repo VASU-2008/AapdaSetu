@@ -29,7 +29,7 @@ data class AuthUiState(
     val successMessage: String? = null,
     val isLoggedIn: Boolean = false,
     val currentUser: UserModel? = null,
-    val serverIp: String = "http://10.0.2.2:3000/"
+    val serverIp: String = "http://192.168.0.103:3000/"
 ) {
     val isMinLengthValid: Boolean get() = password.length >= 8
     val hasNumber: Boolean get() = password.any { it.isDigit() }
